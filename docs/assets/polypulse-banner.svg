@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" width="100%" height="100%" fill="none">
+  <defs>
+    <!-- Background Gradients -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080B12" />
+      <stop offset="50%" stop-color="#0D111D" />
+      <stop offset="100%" stop-color="#080B12" />
+    </linearGradient>
+
+    <!-- Subtle Radial Accent -->
+    <radialGradient id="purple-glow" cx="20%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#8B5CF6" stop-opacity="0.18" />
+      <stop offset="60%" stop-color="#8B5CF6" stop-opacity="0.0" />
+    </radialGradient>
+    <radialGradient id="cyan-glow" cx="80%" cy="60%" r="50%">
+      <stop offset="0%" stop-color="#22D3EE" stop-opacity="0.12" />
+      <stop offset="60%" stop-color="#22D3EE" stop-opacity="0.0" />
+    </radialGradient>
+
+    <!-- Border Linear Gradient -->
+    <linearGradient id="border-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8B5CF6" stop-opacity="0.6" />
+      <stop offset="35%" stop-color="#22D3EE" stop-opacity="0.4" />
+      <stop offset="70%" stop-color="#8B5CF6" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#1E293B" stop-opacity="0.6" />
+    </linearGradient>
+
+    <!-- Pulse Line Gradient -->
+    <linearGradient id="line-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8B5CF6" stop-opacity="0.1" />
+      <stop offset="30%" stop-color="#8B5CF6" stop-opacity="0.9" />
+      <stop offset="50%" stop-color="#22D3EE" stop-opacity="1" />
+      <stop offset="70%" stop-color="#10B981" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#10B981" stop-opacity="0.1" />
+    </linearGradient>
+
+    <!-- Grid Pattern -->
+    <pattern id="tech-grid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#1E293B" stroke-width="0.75" stroke-opacity="0.5" />
+      <circle cx="0" cy="0" r="1" fill="#334155" fill-opacity="0.4" />
+    </pattern>
+
+    <!-- CSS Animation Styles -->
+    <style>
+      .pulse-beacon {
+        animation: beacon-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      }
+      .dash-flow {
+        stroke-dasharray: 8 6;
+        animation: dash-move 30s linear infinite;
+      }
+      .wave-sweep {
+        stroke-dasharray: 200 400;
+        animation: wave-run 4s ease-in-out infinite alternate;
+      }
+      .badge-glow {
+        transition: all 0.3s ease;
+      }
+      @keyframes beacon-pulse {
+        0%, 100% { opacity: 0.3; transform: scale(1); }
+        50% { opacity: 0.85; transform: scale(1.35); }
+      }
+      @keyframes dash-move {
+        to { stroke-dashoffset: -1000; }
+      }
+      @keyframes wave-run {
+        0% { stroke-dashoffset: 600; }
+        100% { stroke-dashoffset: -200; }
+      }
+    </style>
+  </defs>
+
+  <!-- Canvas Background -->
+  <rect width="1200" height="360" rx="16" fill="url(#bg-grad)" />
+  <rect width="1200" height="360" rx="16" fill="url(#purple-glow)" />
+  <rect width="1200" height="360" rx="16" fill="url(#cyan-glow)" />
+  <rect width="1200" height="360" rx="16" fill="url(#tech-grid)" opacity="0.65" />
+  <rect x="1" y="1" width="1198" height="358" rx="15" fill="none" stroke="url(#border-grad)" stroke-width="1.5" />
+
+  <!-- Ambient Market Signal Wave (Bottom) -->
+  <path d="M 0 310 Q 150 325 300 300 T 600 290 T 900 315 T 1200 295" fill="none" stroke="#1E293B" stroke-width="1.5" />
+  <path d="M 0 310 Q 150 325 300 300 T 600 290 T 900 315 T 1200 295" fill="none" stroke="url(#line-grad)" stroke-width="2.5" class="wave-sweep" />
+
+  <!-- Top Status Pill -->
+  <g transform="translate(60, 42)">
+    <rect width="280" height="28" rx="14" fill="#0F172A" stroke="#334155" stroke-width="1" />
+    <circle cx="18" cy="14" r="4.5" fill="#10B981" />
+    <circle cx="18" cy="14" r="8" fill="#10B981" opacity="0.25" class="pulse-beacon" style="transform-origin: 18px 14px;" />
+    <text x="32" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif" font-size="11.5" font-weight="600" fill="#E2E8F0" letter-spacing="0.5">PREDICTION MARKET DATA PIPELINE</text>
+  </g>
+
+  <!-- Venue Indicators (Top Right) -->
+  <g transform="translate(940, 42)">
+    <rect width="100" height="28" rx="6" fill="#131B2E" stroke="#1E293B" stroke-width="1" />
+    <circle cx="16" cy="14" r="3.5" fill="#8B5CF6" />
+    <text x="26" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" fill="#CBD5E1">Polymarket</text>
+
+    <g transform="translate(110, 0)">
+      <rect width="90" height="28" rx="6" fill="#131B2E" stroke="#1E293B" stroke-width="1" />
+      <circle cx="16" cy="14" r="3.5" fill="#22D3EE" />
+      <text x="26" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" fill="#CBD5E1">Kalshi v2</text>
+    </g>
+  </g>
+
+  <!-- Brand Mark (Icon + Title) -->
+  <g transform="translate(60, 100)">
+    <!-- PolyPulse Modern Glyphic Logo -->
+    <g transform="translate(0, 0)">
+      <rect width="64" height="64" rx="14" fill="#0D1322" stroke="#8B5CF6" stroke-width="1.75" />
+      <path d="M 16 32 L 24 32 L 29 18 L 35 46 L 40 26 L 44 36 L 48 32 L 52 32" fill="none" stroke="#22D3EE" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" />
+      <circle cx="35" cy="46" r="2.5" fill="#8B5CF6" />
+      <circle cx="29" cy="18" r="2.5" fill="#22D3EE" />
+    </g>
+
+    <!-- Main Title Typography -->
+    <text x="82" y="44" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif" font-size="44" font-weight="800" fill="#F8FAFC" letter-spacing="-0.03em">
+      POLY<tspan fill="#8B5CF6">PULSE</tspan>
+    </text>
+
+    <!-- Subtitle / Full Name -->
+    <text x="84" y="68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="500" fill="#94A3B8" letter-spacing="0.04em">
+      CROSS-VENUE PREDICTION-MARKET ORDERBOOK &amp; MARKOUT PIPELINE
+    </text>
+  </g>
+
+  <!-- Tagline Paragraph -->
+  <g transform="translate(60, 202)">
+    <text x="0" y="0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="400" fill="#E2E8F0">
+      One unified view of prediction markets.
+      <tspan fill="#64748B">—</tspan>
+      <tspan fill="#94A3B8">Real-time market data ingestion, high-performance C++20 orderbook computation and cross-venue markout scoring.</tspan>
+    </text>
+  </g>
+
+  <!-- Tech Stack Chips (Bottom) -->
+  <g transform="translate(60, 240)">
+    <!-- C++20 -->
+    <rect width="78" height="26" rx="5" fill="#131B2E" stroke="#334155" stroke-width="0.8" />
+    <text x="12" y="17" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="11" font-weight="600" fill="#22D3EE">C++20</text>
+
+    <!-- Python AsyncIO -->
+    <g transform="translate(86, 0)">
+      <rect width="134" height="26" rx="5" fill="#131B2E" stroke="#334155" stroke-width="0.8" />
+      <text x="12" y="17" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="11" font-weight="600" fill="#94A3B8">Python AsyncIO</text>
+    </g>
+
+    <!-- ClickHouse -->
+    <g transform="translate(228, 0)">
+      <rect width="108" height="26" rx="5" fill="#131B2E" stroke="#334155" stroke-width="0.8" />
+      <text x="12" y="17" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="11" font-weight="600" fill="#FBBF24">ClickHouse</text>
+    </g>
+
+    <!-- FastAPI -->
+    <g transform="translate(344, 0)">
+      <rect width="82" height="26" rx="5" fill="#131B2E" stroke="#334155" stroke-width="0.8" />
+      <text x="12" y="17" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="11" font-weight="600" fill="#34D399">FastAPI</text>
+    </g>
+
+    <!-- React 19 -->
+    <g transform="translate(434, 0)">
+      <rect width="86" height="26" rx="5" fill="#131B2E" stroke="#334155" stroke-width="0.8" />
+      <text x="12" y="17" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="11" font-weight="600" fill="#38BDF8">React 19</text>
+    </g>
+
+    <!-- WebSockets -->
+    <g transform="translate(528, 0)">
+      <rect width="108" height="26" rx="5" fill="#131B2E" stroke="#334155" stroke-width="0.8" />
+      <text x="12" y="17" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="11" font-weight="600" fill="#A78BFA">WebSockets</text>
+    </g>
+
+    <!-- AVX2 -->
+    <g transform="translate(644, 0)">
+      <rect width="66" height="26" rx="5" fill="#131B2E" stroke="#334155" stroke-width="0.8" />
+      <text x="12" y="17" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="11" font-weight="600" fill="#F43F5E">AVX2</text>
+    </g>
+
+    <!-- Docker -->
+    <g transform="translate(718, 0)">
+      <rect width="76" height="26" rx="5" fill="#131B2E" stroke="#334155" stroke-width="0.8" />
+      <text x="12" y="17" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="11" font-weight="600" fill="#38BDF8">Docker</text>
+    </g>
+  </g>
+</svg>

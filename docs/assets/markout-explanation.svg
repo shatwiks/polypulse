@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="mo-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080B12" />
+      <stop offset="100%" stop-color="#0E131E" />
+    </linearGradient>
+
+    <pattern id="mo-grid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1E293B" stroke-width="0.5" stroke-opacity="0.3" />
+    </pattern>
+
+    <style>
+      .time-pulse {
+        animation: tpulse 3s ease-in-out infinite;
+      }
+      .asof-line {
+        stroke-dasharray: 4 4;
+        animation: asof-dash 10s linear infinite;
+      }
+      @keyframes tpulse {
+        0%, 100% { r: 5px; opacity: 0.6; }
+        50% { r: 8px; opacity: 1; }
+      }
+      @keyframes asof-dash {
+        to { stroke-dashoffset: -80; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1000" height="620" rx="14" fill="url(#mo-bg)" />
+  <rect width="1000" height="620" rx="14" fill="url(#mo-grid)" />
+  <rect x="1" y="1" width="998" height="618" rx="13" fill="none" stroke="#1E293B" stroke-width="1.2" />
+
+  <!-- Header -->
+  <g transform="translate(40, 36)">
+    <rect width="16" height="16" rx="4" fill="#10B981" />
+    <text x="26" y="13" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700" fill="#F8FAFC" letter-spacing="0.5">POST-TRADE MARKOUT MATHEMATICS &amp; ASOF JOIN</text>
+    <text x="460" y="13" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="400" fill="#94A3B8">Measuring Adverse Selection &amp; Alpha Across 5s, 30s, and 60s Horizons</text>
+  </g>
+
+  <!-- FORMULA BANNER (X: 40, Y: 75) -->
+  <g transform="translate(40, 75)">
+    <rect width="920" height="68" rx="10" fill="#131B2E" stroke="#10B981" stroke-width="1.2" />
+    <text x="24" y="28" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="700" fill="#10B981" letter-spacing="0.6">CORE FORMULA</text>
+    <text x="24" y="52" font-family="'JetBrains Mono', monospace" font-size="16" font-weight="700" fill="#F8FAFC">
+      Markout = Direction × (Future Midpoint<tspan fill="#38BDF8">_{t + Δt}</tspan> − Execution Price<tspan fill="#A78BFA">_{t}</tspan>)
+    </text>
+    <text x="680" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">
+      Where: <tspan fill="#34D399">Direction = +1 (BUY)</tspan>, <tspan fill="#F87171">Direction = −1 (SELL)</tspan>
+    </text>
+  </g>
+
+  <!-- TIMELINE DIAGRAM (X: 40, Y: 165) -->
+  <g transform="translate(40, 165)">
+    <rect width="920" height="190" rx="10" fill="#0D1322" stroke="#1E293B" stroke-width="1" />
+    <text x="20" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#CBD5E1">EXECUTION &amp; EVALUATION TIMELINE</text>
+
+    <!-- Main Axis Line -->
+    <line x1="80" y1="90" x2="840" y2="90" stroke="#334155" stroke-width="2.5" />
+    <!-- Gradient overlay on axis -->
+    <line x1="80" y1="90" x2="840" y2="90" stroke="#22D3EE" stroke-width="2.5" stroke-opacity="0.6" stroke-linecap="round" />
+
+    <!-- Point 0: Trade Execution -->
+    <g transform="translate(100, 90)">
+      <circle cx="0" cy="0" r="7" fill="#8B5CF6" />
+      <circle cx="0" cy="0" r="14" fill="#8B5CF6" opacity="0.25" class="time-pulse" />
+      <line x1="0" y1="-30" x2="0" y2="30" stroke="#8B5CF6" stroke-width="1.5" stroke-dasharray="3 3" />
+      <text x="-40" y="-40" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700" fill="#F8FAFC">t = 0 (EXEC)</text>
+      <text x="-40" y="-25" font-family="'JetBrains Mono', monospace" font-size="10.5" fill="#C4B5FD">Buy @ $0.5000</text>
+      <text x="-40" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">Fill logged</text>
+    </g>
+
+    <!-- Point 1: 5-Second Horizon -->
+    <g transform="translate(320, 90)">
+      <circle cx="0" cy="0" r="6" fill="#22D3EE" />
+      <line x1="0" y1="-30" x2="0" y2="30" stroke="#22D3EE" stroke-width="1.2" stroke-dasharray="3 3" />
+      <text x="-32" y="-40" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700" fill="#F8FAFC">t + 5s</text>
+      <text x="-32" y="-25" font-family="'JetBrains Mono', monospace" font-size="10.5" fill="#38BDF8">Mid = $0.5100</text>
+      <rect x="-42" y="38" width="84" height="24" rx="4" fill="#064E3B" stroke="#059669" stroke-width="1" />
+      <text x="-34" y="54" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700" fill="#34D399">+1.00¢</text>
+    </g>
+
+    <!-- Point 2: 30-Second Horizon -->
+    <g transform="translate(560, 90)">
+      <circle cx="0" cy="0" r="6" fill="#22D3EE" />
+      <line x1="0" y1="-30" x2="0" y2="30" stroke="#22D3EE" stroke-width="1.2" stroke-dasharray="3 3" />
+      <text x="-32" y="-40" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700" fill="#F8FAFC">t + 30s</text>
+      <text x="-32" y="-25" font-family="'JetBrains Mono', monospace" font-size="10.5" fill="#38BDF8">Mid = $0.5250</text>
+      <rect x="-42" y="38" width="84" height="24" rx="4" fill="#064E3B" stroke="#059669" stroke-width="1" />
+      <text x="-34" y="54" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700" fill="#34D399">+2.50¢</text>
+    </g>
+
+    <!-- Point 3: 60-Second Horizon -->
+    <g transform="translate(800, 90)">
+      <circle cx="0" cy="0" r="6" fill="#F43F5E" />
+      <line x1="0" y1="-30" x2="0" y2="30" stroke="#F43F5E" stroke-width="1.2" stroke-dasharray="3 3" />
+      <text x="-32" y="-40" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700" fill="#F8FAFC">t + 60s</text>
+      <text x="-32" y="-25" font-family="'JetBrains Mono', monospace" font-size="10.5" fill="#F87171">Mid = $0.4950</text>
+      <rect x="-42" y="38" width="84" height="24" rx="4" fill="#4C0519" stroke="#E11D48" stroke-width="1" />
+      <text x="-34" y="54" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700" fill="#FB7185">−0.50¢</text>
+    </g>
+  </g>
+
+  <!-- BOTTOM SECTION: CLICKHOUSE ASOF JOIN & NULL SAFETY (X: 40, Y: 375) -->
+  <g transform="translate(40, 375)">
+    <!-- ClickHouse Query Card -->
+    <g transform="translate(0, 0)">
+      <rect width="470" height="205" rx="10" fill="#0D1322" stroke="#FBBF24" stroke-width="1" />
+      <rect width="470" height="32" rx="10" fill="#1C1A14" />
+      <text x="16" y="21" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="700" fill="#FBBF24">CLICKHOUSE TIME-SERIES LEFT ASOF JOIN</text>
+
+      <text x="16" y="56" font-family="'JetBrains Mono', monospace" font-size="10" fill="#E2E8F0"><tspan fill="#F43F5E">SELECT</tspan> t.wallet, t.trade_id, t.side, t.price,</text>
+      <text x="36" y="74" font-family="'JetBrains Mono', monospace" font-size="10" fill="#38BDF8">(s.best_bid + s.best_ask) / 2 <tspan fill="#F43F5E">AS</tspan> future_mid,</text>
+      <text x="36" y="92" font-family="'JetBrains Mono', monospace" font-size="10" fill="#34D399">(CASE WHEN t.side='buy' THEN 1 ELSE -1 END) *</text>
+      <text x="56" y="110" font-family="'JetBrains Mono', monospace" font-size="10" fill="#34D399">(future_mid - t.price) <tspan fill="#F43F5E">AS</tspan> markout</text>
+      <text x="16" y="128" font-family="'JetBrains Mono', monospace" font-size="10" fill="#F43F5E">FROM <tspan fill="#E2E8F0">polypulse.trades t</tspan></text>
+      <text x="16" y="146" font-family="'JetBrains Mono', monospace" font-size="10" fill="#FBBF24">LEFT ASOF JOIN <tspan fill="#E2E8F0">polypulse.orderbook_snapshots s</tspan></text>
+      <text x="36" y="164" font-family="'JetBrains Mono', monospace" font-size="10" fill="#94A3B8">ON t.venue = s.venue AND t.market_id = s.market_id</text>
+      <text x="36" y="182" font-family="'JetBrains Mono', monospace" font-size="10" fill="#38BDF8">AND s.snapshot_time &gt;= t.executed_at + INTERVAL 5 SECOND</text>
+    </g>
+
+    <!-- Mathematical Null-Safety Invariant Card -->
+    <g transform="translate(490, 0)">
+      <rect width="430" height="205" rx="10" fill="#0D1322" stroke="#1E293B" stroke-width="1" />
+      <rect width="430" height="32" rx="10" fill="#131B2E" />
+      <text x="16" y="21" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="700" fill="#CBD5E1">ZERO-LOOKAHEAD NULL SAFETY</text>
+
+      <g transform="translate(16, 46)">
+        <circle cx="6" cy="6" r="3" fill="#10B981" />
+        <text x="18" y="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#F8FAFC">Missing Future Observations Default to Null</text>
+        <text x="18" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">If a market has no orderbook snapshot within [target, target+5s], markout is null. No synthetic interpolation is invented.</text>
+      </g>
+
+      <g transform="translate(16, 96)">
+        <circle cx="6" cy="6" r="3" fill="#10B981" />
+        <text x="18" y="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#F8FAFC">Strict Directional Inversion</text>
+        <text x="18" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">A buy benefits from price appreciation (+ΔP); a sell benefits from price depreciation (−ΔP).</text>
+      </g>
+
+      <g transform="translate(16, 146)">
+        <circle cx="6" cy="6" r="3" fill="#10B981" />
+        <text x="18" y="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#F8FAFC">Wallet Performance Grading</text>
+        <text x="18" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">Positive markout over 30s/60s isolates toxic/informed orderflow from noise liquidity.</text>
+      </g>
+    </g>
+  </g>
+</svg>

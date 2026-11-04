@@ -1,0 +1,40 @@
+name: Feature Request
+description: Propose a new capability, analytical metric, or architectural improvement for PolyPulse
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We appreciate feature suggestions and architectural proposals! Please check existing issues and the [Roadmap](README.md#12-roadmap) to avoid duplicate proposals.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement / Motivation
+      description: Is your feature request related to a specific quantitative or systems limitation?
+      placeholder: "e.g., Currently the engine does not vectorize batch VWAP calculations across SIMD registers..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution / Implementation Approach
+      description: Describe your proposed solution, data structures, or API designs.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other solutions or trade-offs have you explored?
+  - type: dropdown
+    id: roadmap-phase
+    attributes:
+      label: Relevant Roadmap Phase
+      options:
+        - "Phase 8: Distributed Systems Reliability"
+        - "Phase 9: Production Hardening (Polygon fills, verified registry)"
+        - "Phase 10: Multi-Venue Simulation & AVX2 Kernels"
+        - "Other / Architectural Proposal"
+    validations:
+      required: true

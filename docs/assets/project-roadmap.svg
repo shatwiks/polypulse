@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 680" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="rm-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080B12" />
+      <stop offset="100%" stop-color="#0B0F1A" />
+    </linearGradient>
+
+    <pattern id="rm-grid" width="22" height="22" patternUnits="userSpaceOnUse">
+      <path d="M 22 0 L 0 0 0 22" fill="none" stroke="#1E293B" stroke-width="0.5" stroke-opacity="0.3" />
+    </pattern>
+
+    <style>
+      .phase-pulse {
+        animation: ppulse 2.5s ease-in-out infinite;
+      }
+      .track-line {
+        stroke-dasharray: 6 4;
+        animation: track-dash 20s linear infinite;
+      }
+      @keyframes ppulse {
+        0%, 100% { opacity: 0.4; }
+        50% { opacity: 1; }
+      }
+      @keyframes track-dash {
+        to { stroke-dashoffset: -200; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1100" height="680" rx="14" fill="url(#rm-bg)" />
+  <rect width="1100" height="680" rx="14" fill="url(#rm-grid)" />
+  <rect x="1" y="1" width="1098" height="678" rx="13" fill="none" stroke="#1E293B" stroke-width="1.2" />
+
+  <!-- Header -->
+  <g transform="translate(40, 36)">
+    <rect width="16" height="16" rx="4" fill="#8B5CF6" />
+    <text x="26" y="13" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700" fill="#F8FAFC" letter-spacing="0.5">ENGINEERING ROADMAP &amp; MILESTONES</text>
+    <text x="360" y="13" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="400" fill="#94A3B8">Development Phases Grounded in Actual Codebase Implementation</text>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(780, 36)">
+    <circle cx="6" cy="7" r="4" fill="#10B981" />
+    <text x="16" y="11" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#CBD5E1">Completed (7)</text>
+
+    <circle cx="120" cy="7" r="4" fill="#22D3EE" />
+    <text x="130" y="11" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#CBD5E1">In Progress (1)</text>
+
+    <circle cx="230" cy="7" r="4" fill="#64748B" />
+    <text x="240" y="11" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#CBD5E1">Planned (2)</text>
+  </g>
+
+  <!-- COLUMN 1: PHASES 1 to 5 (Left) -->
+  <g transform="translate(40, 75)">
+    <!-- Phase 1 -->
+    <g transform="translate(0, 0)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#10B981" stroke-width="1" />
+      <rect width="4" height="96" rx="2" fill="#10B981" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#F8FAFC">PHASE 1: MVP FOUNDATION</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#064E3B" stroke="#059669" stroke-width="0.8" />
+      <text x="404" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#6EE7B7">COMPLETED</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">FastAPI async server, initial Docker compose, base schemas.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">backend/main.py · docker-compose.yml · requirements.txt</text>
+    </g>
+
+    <!-- Phase 2 -->
+    <g transform="translate(0, 110)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#10B981" stroke-width="1" />
+      <rect width="4" height="96" rx="2" fill="#10B981" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#F8FAFC">PHASE 2: LIVE MARKET DATA INTEGRATION</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#064E3B" stroke="#059669" stroke-width="0.8" />
+      <text x="404" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#6EE7B7">COMPLETED</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">Polymarket WS feed, Kalshi RSA-authenticated v2 feed, demo simulator.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">backend/connectors.py · backend/normalizers.py</text>
+    </g>
+
+    <!-- Phase 3 -->
+    <g transform="translate(0, 220)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#10B981" stroke-width="1" />
+      <rect width="4" height="96" rx="2" fill="#10B981" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#F8FAFC">PHASE 3: C++ PERFORMANCE ENGINE</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#064E3B" stroke="#059669" stroke-width="0.8" />
+      <text x="404" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#6EE7B7">COMPLETED</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">Contiguous array book, integer tick scale, zero-alloc VWAP &amp; OFI kernels.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">engine/src/orderbook.cpp · engine/include/orderbook.hpp</text>
+    </g>
+
+    <!-- Phase 4 -->
+    <g transform="translate(0, 330)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#10B981" stroke-width="1" />
+      <rect width="4" height="96" rx="2" fill="#10B981" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#F8FAFC">PHASE 4: CLICKHOUSE ANALYTICS</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#064E3B" stroke="#059669" stroke-width="0.8" />
+      <text x="404" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#6EE7B7">COMPLETED</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">SQLite WAL local journal + batch exporter to ClickHouse ReplacingMergeTree.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">backend/storage.py · database/init.sql</text>
+    </g>
+
+    <!-- Phase 5 -->
+    <g transform="translate(0, 440)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#10B981" stroke-width="1" />
+      <rect width="4" height="96" rx="2" fill="#10B981" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#F8FAFC">PHASE 5: WALLET MARKOUT ENGINE</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#064E3B" stroke="#059669" stroke-width="0.8" />
+      <text x="404" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#6EE7B7">COMPLETED</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">Post-trade 5s/30s/60s markout, null-safe observation alignment, REST API.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">backend/main.py: markouts() · backend/storage.py: future_mid()</text>
+    </g>
+  </g>
+
+  <!-- COLUMN 2: PHASES 6 to 10 (Right) -->
+  <g transform="translate(570, 75)">
+    <!-- Phase 6 -->
+    <g transform="translate(0, 0)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#10B981" stroke-width="1" />
+      <rect width="4" height="96" rx="2" fill="#10B981" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#F8FAFC">PHASE 6: CROSS-VENUE INTELLIGENCE</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#064E3B" stroke="#059669" stroke-width="0.8" />
+      <text x="404" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#6EE7B7">COMPLETED</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">Verified pair matching, gross spread calculation, directional edge scanner.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">backend/state.py: spreads() · /api/v1/spreads</text>
+    </g>
+
+    <!-- Phase 7 -->
+    <g transform="translate(0, 110)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#10B981" stroke-width="1" />
+      <rect width="4" height="96" rx="2" fill="#10B981" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#F8FAFC">PHASE 7: REACT 19 TERMINAL</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#064E3B" stroke="#059669" stroke-width="0.8" />
+      <text x="404" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#6EE7B7">COMPLETED</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">Live ladder, cross-venue scanner, Web Worker stream parser, command palette.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">frontend/src/main.tsx · frontend/src/stream.worker.ts</text>
+    </g>
+
+    <!-- Phase 8 -->
+    <g transform="translate(0, 220)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#22D3EE" stroke-width="1.2" />
+      <rect width="4" height="96" rx="2" fill="#22D3EE" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#F8FAFC">PHASE 8: DISTRIBUTED SYSTEMS RELIABILITY</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#164E63" stroke="#0891B2" stroke-width="0.8" />
+      <text x="398" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#67E8F9">IN PROGRESS</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#E2E8F0">30s silence watchdog, sequence gap recovery, exponential backoff reconnects.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">backend/connectors.py: reconnect() &amp; watchdog loops</text>
+    </g>
+
+    <!-- Phase 9 -->
+    <g transform="translate(0, 330)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#334155" stroke-dasharray="3 3" stroke-width="1" />
+      <rect width="4" height="96" rx="2" fill="#475569" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#94A3B8">PHASE 9: PRODUCTION HARDENING</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#1E293B" stroke="#475569" stroke-width="0.8" />
+      <text x="412" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#94A3B8">PLANNED</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#64748B">Polygon on-chain fill decoder, automated verified contract registry, auth tokens.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#64748B">contracts/ · auth/ · certs/ (PRD requirements)</text>
+    </g>
+
+    <!-- Phase 10 -->
+    <g transform="translate(0, 440)">
+      <rect width="490" height="96" rx="8" fill="#0D1322" stroke="#334155" stroke-dasharray="3 3" stroke-width="1" />
+      <rect width="4" height="96" rx="2" fill="#475569" />
+      <text x="18" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#94A3B8">PHASE 10: MULTI-VENUE SIMULATION &amp; BENCHMARKS</text>
+      <rect x="390" y="12" width="84" height="20" rx="4" fill="#1E293B" stroke="#475569" stroke-width="0.8" />
+      <text x="412" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" font-weight="700" fill="#94A3B8">PLANNED</text>
+      <text x="18" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#64748B">AVX2 SIMD kernel optimizations, load testing, HA multi-node ClickHouse cluster.</text>
+      <text x="18" y="66" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#64748B">engine/avx2/ · deploy/k8s/ · stress_tests/</text>
+    </g>
+  </g>
+</svg>

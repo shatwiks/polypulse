@@ -1,0 +1,44 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      POLYPULSE_MODE: ${POLYPULSE_MODE:-demo}
+      POLYMARKET_ASSET_IDS: ${POLYMARKET_ASSET_IDS:-}
+      KALSHI_MARKET_TICKERS: ${KALSHI_MARKET_TICKERS:-}
+      KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID:-}
+      KALSHI_PRIVATE_KEY_PATH: ${KALSHI_PRIVATE_KEY_PATH:-}
+      MARKET_PAIRS_JSON: ${MARKET_PAIRS_JSON:-[]}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      POLYPULSE_DB: /data/polypulse.db
+    volumes:
+      - journal_data:/data
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    ports:
+      - "8123:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+volumes:
+  clickhouse_data:
+  journal_data:

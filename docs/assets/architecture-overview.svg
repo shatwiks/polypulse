@@ -1,0 +1,232 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 680" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="arch-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080B12" />
+      <stop offset="50%" stop-color="#0B0F19" />
+      <stop offset="100%" stop-color="#080B12" />
+    </linearGradient>
+
+    <linearGradient id="card-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#131B2E" />
+      <stop offset="100%" stop-color="#0D1322" />
+    </linearGradient>
+
+    <linearGradient id="edge-purple" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8B5CF6" />
+      <stop offset="100%" stop-color="#22D3EE" />
+    </linearGradient>
+
+    <linearGradient id="edge-cyan" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#22D3EE" />
+      <stop offset="100%" stop-color="#10B981" />
+    </linearGradient>
+
+    <pattern id="arch-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#1E293B" stroke-width="0.6" stroke-opacity="0.4" />
+    </pattern>
+
+    <style>
+      .flow-path {
+        stroke-dasharray: 6 6;
+        animation: flow-line 25s linear infinite;
+      }
+      .data-packet {
+        animation: packet-move 3.2s ease-in-out infinite;
+      }
+      .beacon {
+        animation: beacon-pulse 2s ease-in-out infinite;
+      }
+      @keyframes flow-line {
+        to { stroke-dashoffset: -400; }
+      }
+      @keyframes beacon-pulse {
+        0%, 100% { opacity: 0.3; transform: scale(1); }
+        50% { opacity: 0.9; transform: scale(1.3); }
+      }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1100" height="680" rx="14" fill="url(#arch-bg)" />
+  <rect width="1100" height="680" rx="14" fill="url(#arch-grid)" />
+  <rect x="1" y="1" width="1098" height="678" rx="13" fill="none" stroke="#1E293B" stroke-width="1.2" />
+
+  <!-- Header -->
+  <g transform="translate(40, 36)">
+    <rect width="16" height="16" rx="4" fill="#8B5CF6" />
+    <text x="26" y="13" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700" fill="#F8FAFC" letter-spacing="0.5">SYSTEM ARCHITECTURE</text>
+    <text x="225" y="13" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="400" fill="#94A3B8">End-to-End Prediction Market Ingestion, Computation &amp; Analytics Flow</text>
+  </g>
+
+  <!-- Flow Lines (Layer Connectors) -->
+  <g stroke-linecap="round">
+    <!-- Ingestion to Processing -->
+    <path d="M 240 220 L 320 220" stroke="#8B5CF6" stroke-width="2" class="flow-path" stroke-opacity="0.8" />
+    <!-- Processing to Storage (Downwards) -->
+    <path d="M 520 320 L 520 400" stroke="#22D3EE" stroke-width="2" class="flow-path" stroke-opacity="0.8" />
+    <!-- Storage to Analytics -->
+    <path d="M 640 480 L 720 480" stroke="#10B981" stroke-width="2" class="flow-path" stroke-opacity="0.8" />
+    <!-- Processing to Presentation -->
+    <path d="M 640 220 L 720 220" stroke="#22D3EE" stroke-width="2" class="flow-path" stroke-opacity="0.8" />
+    <!-- Analytics to Presentation -->
+    <path d="M 840 400 L 840 320" stroke="#8B5CF6" stroke-width="2" class="flow-path" stroke-opacity="0.7" />
+  </g>
+
+  <!-- COLUMN 1: MARKET DATA SOURCES & INGESTION (X: 40) -->
+  <g transform="translate(40, 80)">
+    <rect width="200" height="550" rx="10" fill="#0D1322" stroke="#1E293B" stroke-width="1" />
+    <rect width="200" height="34" rx="10" fill="#131B2E" />
+    <text x="16" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#94A3B8" letter-spacing="0.8">1. INGESTION LAYER</text>
+
+    <!-- Source Box: Polymarket -->
+    <g transform="translate(14, 50)">
+      <rect width="172" height="74" rx="8" fill="#131B2E" stroke="#8B5CF6" stroke-width="1" />
+      <circle cx="16" cy="18" r="4" fill="#8B5CF6" />
+      <text x="28" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5" font-weight="600" fill="#F8FAFC">Polymarket Feed</text>
+      <text x="16" y="44" font-family="'JetBrains Mono', monospace" font-size="10" fill="#94A3B8">CLOB WebSocket</text>
+      <text x="16" y="60" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#64748B">Snapshot + Level Changes</text>
+    </g>
+
+    <!-- Source Box: Kalshi -->
+    <g transform="translate(14, 136)">
+      <rect width="172" height="74" rx="8" fill="#131B2E" stroke="#22D3EE" stroke-width="1" />
+      <circle cx="16" cy="18" r="4" fill="#22D3EE" />
+      <text x="28" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5" font-weight="600" fill="#F8FAFC">Kalshi Trade API v2</text>
+      <text x="16" y="44" font-family="'JetBrains Mono', monospace" font-size="10" fill="#94A3B8">RSA Auth WebSocket</text>
+      <text x="16" y="60" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#64748B">Orderbook Delta (SID seq)</text>
+    </g>
+
+    <!-- Source Box: Polygon Fills (Planned) -->
+    <g transform="translate(14, 222)">
+      <rect width="172" height="66" rx="8" fill="#0F172A" stroke="#334155" stroke-dasharray="4 4" stroke-width="1" />
+      <circle cx="16" cy="18" r="4" fill="#64748B" />
+      <text x="28" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#94A3B8">Polygon EVM Fills</text>
+      <text x="16" y="44" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#64748B">On-Chain Event Logs</text>
+      <text x="16" y="58" font-family="'JetBrains Mono', monospace" font-size="9" fill="#F43F5E">Planned / Phase 9</text>
+    </g>
+
+    <!-- Ingestion Guardrail Module -->
+    <g transform="translate(14, 310)">
+      <rect width="172" height="216" rx="8" fill="#131F37" stroke="#1E293B" stroke-width="1" />
+      <text x="14" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="700" fill="#38BDF8">Reliability Engine</text>
+      
+      <circle cx="20" cy="46" r="3" fill="#10B981" />
+      <text x="32" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#E2E8F0">30s Silence Watchdog</text>
+      
+      <circle cx="20" cy="78" r="3" fill="#10B981" />
+      <text x="32" y="82" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#E2E8F0">Seq Gap Resubscribe</text>
+
+      <circle cx="20" cy="110" r="3" fill="#10B981" />
+      <text x="32" y="114" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#E2E8F0">SHA-256 Deduplication</text>
+
+      <circle cx="20" cy="142" r="3" fill="#10B981" />
+      <text x="32" y="146" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#E2E8F0">Exponential Reconnect</text>
+
+      <circle cx="20" cy="174" r="3" fill="#10B981" />
+      <text x="32" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#E2E8F0">Integer Normalization</text>
+      <text x="32" y="196" font-family="'JetBrains Mono', monospace" font-size="9" fill="#94A3B8">Ticks: 1/10,000 unit</text>
+    </g>
+  </g>
+
+  <!-- COLUMN 2: C++20 CORE ENGINE (X: 320, Y: 80) -->
+  <g transform="translate(320, 80)">
+    <rect width="320" height="240" rx="10" fill="#0D1322" stroke="#8B5CF6" stroke-width="1.5" />
+    <rect width="320" height="34" rx="10" fill="#171A36" />
+    <text x="16" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#C4B5FD" letter-spacing="0.8">2. C++20 ORDERBOOK ENGINE</text>
+
+    <!-- Sub components inside engine -->
+    <g transform="translate(16, 50)">
+      <rect width="288" height="60" rx="6" fill="#131B2E" stroke="#334155" stroke-width="1" />
+      <text x="14" y="22" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="600" fill="#22D3EE">std::vector&lt;PriceLevel&gt;</text>
+      <text x="14" y="44" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">Contiguous sorted cache-line memory · O(log N) lookup</text>
+    </g>
+
+    <g transform="translate(16, 120)">
+      <rect width="138" height="96" rx="6" fill="#131B2E" stroke="#1E293B" stroke-width="1" />
+      <text x="12" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#F8FAFC">VWAP Kernel</text>
+      <text x="12" y="38" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">pp_vwap()</text>
+      <text x="12" y="58" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" fill="#94A3B8">Exact integer-cost</text>
+      <text x="12" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" fill="#94A3B8">Zero heap allocation</text>
+    </g>
+
+    <g transform="translate(164, 120)">
+      <rect width="140" height="96" rx="6" fill="#131B2E" stroke="#1E293B" stroke-width="1" />
+      <text x="12" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#F8FAFC">Order-Flow Imbalance</text>
+      <text x="12" y="38" font-family="'JetBrains Mono', monospace" font-size="9.5" fill="#38BDF8">pp_imbalance()</text>
+      <text x="12" y="58" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" fill="#94A3B8">(B - A) / (B + A)</text>
+      <text x="12" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" fill="#94A3B8">Normalized quote pressure</text>
+    </g>
+  </g>
+
+  <!-- COLUMN 2 (BOTTOM): STORAGE TIER (X: 320, Y: 400) -->
+  <g transform="translate(320, 390)">
+    <rect width="320" height="240" rx="10" fill="#0D1322" stroke="#1E293B" stroke-width="1" />
+    <rect width="320" height="34" rx="10" fill="#131B2E" />
+    <text x="16" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#94A3B8" letter-spacing="0.8">3. PERSISTENCE &amp; TIME-SERIES STORAGE</text>
+
+    <!-- SQLite WAL -->
+    <g transform="translate(16, 50)">
+      <rect width="288" height="74" rx="6" fill="#131B2E" stroke="#334155" stroke-width="1" />
+      <text x="14" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#F8FAFC">SQLite WAL Local Journal</text>
+      <text x="14" y="42" font-family="'JetBrains Mono', monospace" font-size="10" fill="#22D3EE">polypulse.db (WAL Mode)</text>
+      <text x="14" y="60" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">Local durability · Retry queue · Offline snapshot replay</text>
+    </g>
+
+    <!-- ClickHouse Exporter -->
+    <g transform="translate(16, 134)">
+      <rect width="288" height="88" rx="6" fill="#131B2E" stroke="#FBBF24" stroke-width="1" />
+      <text x="14" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#FBBF24">ClickHouse Columnar Warehouse</text>
+      <text x="14" y="42" font-family="'JetBrains Mono', monospace" font-size="10" fill="#E2E8F0">ReplacingMergeTree · AggregatingMergeTree</text>
+      <text x="14" y="60" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">polypulse.market_events · polypulse.orderbook_snapshots</text>
+      <text x="14" y="76" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">High-throughput micro-batch HTTP exporter</text>
+    </g>
+  </g>
+
+  <!-- COLUMN 3: PRESENTATION TIER (X: 720, Y: 80) -->
+  <g transform="translate(720, 80)">
+    <rect width="340" height="240" rx="10" fill="#0D1322" stroke="#22D3EE" stroke-width="1.5" />
+    <rect width="340" height="34" rx="10" fill="#11253E" />
+    <text x="16" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#7DD3FC" letter-spacing="0.8">4. FASTAPI &amp; REACT TERMINAL</text>
+
+    <!-- FastAPI Backend -->
+    <g transform="translate(16, 48)">
+      <rect width="308" height="74" rx="6" fill="#131B2E" stroke="#334155" stroke-width="1" />
+      <text x="14" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="600" fill="#F8FAFC">FastAPI Gateway</text>
+      <text x="14" y="40" font-family="'JetBrains Mono', monospace" font-size="10" fill="#34D399">REST (/api/v1/*) · WebSockets (/ws/*)</text>
+      <text x="14" y="60" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">In-memory state · Broadcasting queues · Health watchdog</text>
+    </g>
+
+    <!-- React 19 Frontend -->
+    <g transform="translate(16, 130)">
+      <rect width="308" height="92" rx="6" fill="#131B2E" stroke="#38BDF8" stroke-width="1" />
+      <text x="14" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="600" fill="#38BDF8">React 19 High-Speed Terminal</text>
+      <text x="14" y="44" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10.5" fill="#E2E8F0">Dedicated Web Worker stream parsing (off-main-thread)</text>
+      <text x="14" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10.5" fill="#94A3B8">Live Orderbook Ladder · Cross-Venue Scanner</text>
+      <text x="14" y="80" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10.5" fill="#94A3B8">Wallet Intelligence · System Health Dashboard</text>
+    </g>
+  </g>
+
+  <!-- COLUMN 3 (BOTTOM): ANALYTICS & INTELLIGENCE (X: 720, Y: 390) -->
+  <g transform="translate(720, 390)">
+    <rect width="340" height="240" rx="10" fill="#0D1322" stroke="#1E293B" stroke-width="1" />
+    <rect width="340" height="34" rx="10" fill="#131B2E" />
+    <text x="16" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#94A3B8" letter-spacing="0.8">5. ANALYTICS &amp; MARKOUT ENGINE</text>
+
+    <!-- Markout Module -->
+    <g transform="translate(16, 50)">
+      <rect width="308" height="84" rx="6" fill="#131B2E" stroke="#10B981" stroke-width="1" />
+      <text x="14" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#10B981">Post-Trade Markout Scoring</text>
+      <text x="14" y="44" font-family="'JetBrains Mono', monospace" font-size="10" fill="#F8FAFC">Markout = Dir × (Mid(t+Δt) - P_exec)</text>
+      <text x="14" y="62" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">5s, 30s, 60s Horizons · ASOF JOIN alignment</text>
+      <text x="14" y="76" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="9.5" fill="#64748B">Zero-lookahead null safety for unobserved future ticks</text>
+    </g>
+
+    <!-- Cross-Venue Spread -->
+    <g transform="translate(16, 142)">
+      <rect width="308" height="80" rx="6" fill="#131B2E" stroke="#334155" stroke-width="1" />
+      <text x="14" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#F8FAFC">Cross-Venue Spread Scanner</text>
+      <text x="14" y="44" font-family="'JetBrains Mono', monospace" font-size="10" fill="#38BDF8">Buy Poly / Sell Kalshi &amp; Inverse</text>
+      <text x="14" y="62" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">Pair verification guard · Gross quote edge analysis</text>
+    </g>
+  </g>
+</svg>

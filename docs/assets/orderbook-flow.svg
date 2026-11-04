@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="ob-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080B12" />
+      <stop offset="100%" stop-color="#0E121E" />
+    </linearGradient>
+
+    <pattern id="ob-grid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1E293B" stroke-width="0.5" stroke-opacity="0.3" />
+    </pattern>
+
+    <style>
+      .bid-bar {
+        animation: bid-shift 4s ease-in-out infinite alternate;
+      }
+      .ask-bar {
+        animation: ask-shift 4s ease-in-out infinite alternate;
+      }
+      .math-glow {
+        animation: mglow 3s ease-in-out infinite;
+      }
+      @keyframes bid-shift {
+        0% { width: 140px; }
+        100% { width: 180px; }
+      }
+      @keyframes ask-shift {
+        0% { width: 150px; }
+        100% { width: 120px; }
+      }
+      @keyframes mglow {
+        0%, 100% { stroke-opacity: 0.4; }
+        50% { stroke-opacity: 0.9; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1000" height="600" rx="14" fill="url(#ob-bg)" />
+  <rect width="1000" height="600" rx="14" fill="url(#ob-grid)" />
+  <rect x="1" y="1" width="998" height="598" rx="13" fill="none" stroke="#1E293B" stroke-width="1.2" />
+
+  <!-- Header -->
+  <g transform="translate(40, 36)">
+    <rect width="16" height="16" rx="4" fill="#8B5CF6" />
+    <text x="26" y="13" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700" fill="#F8FAFC" letter-spacing="0.5">C++20 HIGH-PERFORMANCE ORDERBOOK ENGINE</text>
+    <text x="440" y="13" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="400" fill="#94A3B8">Contiguous Memory Layout, Binary Search &amp; Analytical Kernels</text>
+  </g>
+
+  <!-- LEFT: Memory Architecture & Depth Visualization (X: 40) -->
+  <g transform="translate(40, 80)">
+    <rect width="440" height="480" rx="10" fill="#0D1322" stroke="#1E293B" stroke-width="1" />
+    <rect width="440" height="34" rx="10" fill="#131B2E" />
+    <text x="16" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#CBD5E1">CONTIGUOUS VECTOR LAYOUT</text>
+    <text x="260" y="22" font-family="'JetBrains Mono', monospace" font-size="11" fill="#38BDF8">std::vector&lt;PriceLevel&gt;</text>
+
+    <!-- Asks ladder (Red) -->
+    <g transform="translate(20, 50)">
+      <text x="0" y="14" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#F43F5E">ASKS (Ascending Order)</text>
+      <text x="280" y="14" font-family="'JetBrains Mono', monospace" font-size="10" fill="#94A3B8">asks_.front() = Best Ask</text>
+
+      <!-- Level Ask 3 -->
+      <g transform="translate(0, 26)">
+        <rect width="400" height="24" rx="4" fill="#131B2E" stroke="#1E293B" stroke-width="0.8" />
+        <rect width="100" height="24" rx="4" fill="#EF4444" opacity="0.15" />
+        <text x="12" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#F87171">0.5300 (5300 ticks)</text>
+        <text x="240" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#CBD5E1">45.00 units</text>
+      </g>
+      <!-- Level Ask 2 -->
+      <g transform="translate(0, 56)">
+        <rect width="400" height="24" rx="4" fill="#131B2E" stroke="#1E293B" stroke-width="0.8" />
+        <rect width="130" height="24" rx="4" fill="#EF4444" opacity="0.2" />
+        <text x="12" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#F87171">0.5200 (5200 ticks)</text>
+        <text x="240" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#CBD5E1">60.00 units</text>
+      </g>
+      <!-- Level Ask 1 (Best Ask) -->
+      <g transform="translate(0, 86)">
+        <rect width="400" height="24" rx="4" fill="#1A1828" stroke="#EF4444" stroke-width="1.2" />
+        <rect width="160" height="24" rx="4" fill="#EF4444" opacity="0.28" class="ask-bar" />
+        <text x="12" y="16" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700" fill="#FCA5A5">0.5100 (5100 ticks) ★</text>
+        <text x="240" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#F8FAFC">75.00 units</text>
+      </g>
+    </g>
+
+    <!-- SPREAD DIVIDER -->
+    <g transform="translate(20, 184)">
+      <line x1="0" y1="12" x2="400" y2="12" stroke="#334155" stroke-dasharray="4 4" stroke-width="1" />
+      <rect x="140" y="0" width="120" height="24" rx="12" fill="#0F172A" stroke="#8B5CF6" stroke-width="1" />
+      <text x="154" y="16" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" fill="#C4B5FD">SPREAD: 0.0200</text>
+    </g>
+
+    <!-- Bids ladder (Green) -->
+    <g transform="translate(20, 220)">
+      <text x="0" y="14" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#10B981">BIDS (Descending Order)</text>
+      <text x="280" y="14" font-family="'JetBrains Mono', monospace" font-size="10" fill="#94A3B8">bids_.front() = Best Bid</text>
+
+      <!-- Level Bid 1 (Best Bid) -->
+      <g transform="translate(0, 26)">
+        <rect width="400" height="24" rx="4" fill="#122524" stroke="#10B981" stroke-width="1.2" />
+        <rect width="180" height="24" rx="4" fill="#10B981" opacity="0.28" class="bid-bar" />
+        <text x="12" y="16" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700" fill="#6EE7B7">0.4900 (4900 ticks) ★</text>
+        <text x="240" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#F8FAFC">85.00 units</text>
+      </g>
+      <!-- Level Bid 2 -->
+      <g transform="translate(0, 56)">
+        <rect width="400" height="24" rx="4" fill="#131B2E" stroke="#1E293B" stroke-width="0.8" />
+        <rect width="140" height="24" rx="4" fill="#10B981" opacity="0.2" />
+        <text x="12" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#34D399">0.4800 (4800 ticks)</text>
+        <text x="240" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#CBD5E1">65.00 units</text>
+      </g>
+      <!-- Level Bid 3 -->
+      <g transform="translate(0, 86)">
+        <rect width="400" height="24" rx="4" fill="#131B2E" stroke="#1E293B" stroke-width="0.8" />
+        <rect width="90" height="24" rx="4" fill="#10B981" opacity="0.15" />
+        <text x="12" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#34D399">0.4700 (4700 ticks)</text>
+        <text x="240" y="16" font-family="'JetBrains Mono', monospace" font-size="11" fill="#CBD5E1">40.00 units</text>
+      </g>
+    </g>
+
+    <!-- Invariant Box (Bottom of Left Card) -->
+    <g transform="translate(20, 370)">
+      <rect width="400" height="85" rx="6" fill="#101827" stroke="#1E293B" stroke-width="1" />
+      <text x="12" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="700" fill="#38BDF8">CACHE LINE ADVANTAGE</text>
+      <text x="12" y="38" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">PriceLevel struct = 16 bytes (int64_t price + int64_t qty).</text>
+      <text x="12" y="54" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#94A3B8">One 64-byte L1 cache line holds 4 full price levels consecutively.</text>
+      <text x="12" y="70" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" fill="#34D399">std::lower_bound binary search incurs near-zero cache misses.</text>
+    </g>
+  </g>
+
+  <!-- RIGHT: ANALYTICAL KERNELS & CTYPES INTERFACE (X: 510) -->
+  <g transform="translate(510, 80)">
+    <!-- VWAP Kernel Card -->
+    <g transform="translate(0, 0)">
+      <rect width="450" height="145" rx="10" fill="#0D1322" stroke="#22D3EE" stroke-width="1.2" />
+      <rect width="450" height="32" rx="10" fill="#132338" />
+      <text x="16" y="21" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#38BDF8">VOLUME-WEIGHTED AVERAGE PRICE (VWAP)</text>
+      
+      <text x="16" y="58" font-family="'JetBrains Mono', monospace" font-size="11.5" fill="#F8FAFC">double pp_vwap(void* book, int buy, int64_t qty);</text>
+      <text x="16" y="86" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">Iterates asks (if buy=1) or bids (if buy=0) until target quantity filled.</text>
+      <text x="16" y="104" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">Uses 80-bit extended precision (long double) to prevent integer overflow.</text>
+      <text x="16" y="124" font-family="'JetBrains Mono', monospace" font-size="10" fill="#FBBF24">Returns NaN if available book depth is less than requested quantity.</text>
+    </g>
+
+    <!-- Order Flow Imbalance Card -->
+    <g transform="translate(0, 165)">
+      <rect width="450" height="145" rx="10" fill="#0D1322" stroke="#8B5CF6" stroke-width="1.2" />
+      <rect width="450" height="32" rx="10" fill="#1C1836" />
+      <text x="16" y="21" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#C4B5FD">ORDER FLOW IMBALANCE (OFI)</text>
+      
+      <text x="16" y="58" font-family="'JetBrains Mono', monospace" font-size="11.5" fill="#F8FAFC">double pp_imbalance(void* book);</text>
+      <text x="16" y="86" font-family="'JetBrains Mono', monospace" font-size="11" fill="#34D399">Imbalance = (Total_Bid_Qty - Total_Ask_Qty) / (Total_Bid + Total_Ask)</text>
+      <text x="16" y="106" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">Yields normalized pressure scalar in range [-1.0, +1.0].</text>
+      <text x="16" y="124" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#94A3B8">O(N) single-pass summation over all active bids and asks.</text>
+    </g>
+
+    <!-- C FFI Bridge Card -->
+    <g transform="translate(0, 330)">
+      <rect width="450" height="150" rx="10" fill="#0D1322" stroke="#1E293B" stroke-width="1" />
+      <rect width="450" height="32" rx="10" fill="#131B2E" />
+      <text x="16" y="21" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#94A3B8">C-LINKAGE EXPORTS (extern "C")</text>
+      
+      <text x="16" y="58" font-family="'JetBrains Mono', monospace" font-size="10.5" fill="#E2E8F0">pp_create() / pp_destroy()      <tspan fill="#64748B">// Book lifecycle</tspan></text>
+      <text x="16" y="78" font-family="'JetBrains Mono', monospace" font-size="10.5" fill="#E2E8F0">pp_snapshot(book, bids, asks)   <tspan fill="#64748B">// Bulk array load</tspan></text>
+      <text x="16" y="98" font-family="'JetBrains Mono', monospace" font-size="10.5" fill="#E2E8F0">pp_set_level(book, side, p, q)  <tspan fill="#64748B">// In-place delta</tspan></text>
+      <text x="16" y="118" font-family="'JetBrains Mono', monospace" font-size="10.5" fill="#E2E8F0">pp_quote(book)                  <tspan fill="#64748B">// Zero-alloc O(1) top quote</tspan></text>
+      <text x="16" y="138" font-family="'JetBrains Mono', monospace" font-size="10.5" fill="#E2E8F0">pp_levels(book, side, out, cap) <tspan fill="#64748B">// Zero-copy buffer copy</tspan></text>
+    </g>
+  </g>
+</svg>
