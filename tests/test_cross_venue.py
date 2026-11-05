@@ -24,6 +24,21 @@ from backend.scanner import (
     validate_contract_compatibility,
     calculate_kalshi_fee,
     calculate_polymarket_fee,
+    compute_ladder_vwap,
+)
+from backend.fees import (
+    get_fee_schedule,
+    calculate_venue_taker_fee,
+    evaluate_net_opportunity_costs,
+    DEFAULT_FEE_VERSION,
+)
+from backend.canonical import (
+    normalize_kalshi_book,
+    normalize_polymarket_book,
+    to_price_ticks,
+    to_quantity_units,
+    ticks_to_float,
+    units_to_float,
 )
 
 
@@ -362,6 +377,214 @@ class TestCrossVenueIntelligence(unittest.TestCase):
 
         # Clean up env
         del os.environ["OPERATOR_KEY"]
+
+    def test_kalshi_canonical_normalization_with_no_bid_transformation(self):
+        """
+        Tests Kalshi canonical transformation:
+        Kalshi YES bid: 0.38 (380,000 ticks)
+        Kalshi NO bid: 0.58 (580,000 ticks) -> implies YES ask: 1.0 - 0.58 = 0.42 (420,000 ticks)
+        Synthetic NO ask: 1.0 - 0.38 = 0.62 (620,000 ticks)
+        """
+        payload = {
+            "market_ticker": "KXFED-MAR26",
+            "yes_bid": "0.38",
+            "yes_bid_size": "500",
+            "no_bid": "0.58",
+            "no_bid_size": "750",
+            "status": "active",
+            "exchange_timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        quote = normalize_kalshi_book(payload, received_at=datetime.now(timezone.utc).isoformat())
+        self.assertTrue(quote.valid)
+        self.assertFalse(quote.stale)
+        self.assertEqual(quote.yes_bid_ticks, 380_000)
+        self.assertEqual(quote.yes_ask_ticks, 420_000)
+        self.assertEqual(quote.no_bid_ticks, 580_000)
+        self.assertEqual(quote.no_ask_ticks, 620_000)
+        self.assertEqual(quote.yes_bid_qty, 500.0)
+        self.assertEqual(quote.yes_ask_qty, 750.0)
+        self.assertTrue(quote.is_executable())
+
+    def test_polymarket_canonical_normalization_preserves_token_id(self):
+        """Tests Polymarket canonical normalization preserves outcome token ID and computes complementary NO quote."""
+        tok_id = "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+        payload = {
+            "market_id": "0xfeedbeef",
+            "best_bid": "0.45",
+            "best_ask": "0.47",
+            "bid_depth": "1000",
+            "ask_depth": "1200",
+            "status": "active",
+            "exchange_timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        quote = normalize_polymarket_book(payload, received_at=datetime.now(timezone.utc).isoformat(), outcome_token_id=tok_id)
+        self.assertTrue(quote.valid)
+        self.assertFalse(quote.stale)
+        self.assertEqual(quote.outcome_id, tok_id)
+        self.assertEqual(quote.yes_bid_ticks, 450_000)
+        self.assertEqual(quote.yes_ask_ticks, 470_000)
+        # NO bid = 1.0 - 0.47 = 0.53
+        self.assertEqual(quote.no_bid_ticks, 530_000)
+        # NO ask = 1.0 - 0.45 = 0.55
+        self.assertEqual(quote.no_ask_ticks, 550_000)
+        self.assertTrue(quote.is_executable())
+
+    def test_canonical_normalization_rejects_crossed_quotes(self):
+        """Tests that crossed books (ask <= bid) produce valid=False with diagnostic reason."""
+        crossed = {
+            "market_ticker": "KX-CROSSED",
+            "yes_bid": "0.52",
+            "yes_ask": "0.48",
+            "yes_bid_size": "100",
+            "yes_ask_size": "100",
+        }
+        quote = normalize_kalshi_book(crossed, received_at=datetime.now(timezone.utc).isoformat())
+        self.assertFalse(quote.valid)
+        self.assertFalse(quote.is_executable())
+        self.assertIn("Crossed or locked", quote.rejection_reason)
+
+    def test_canonical_normalization_detects_stale_quotes(self):
+        """Tests that quotes older than max_age_seconds are flagged as stale."""
+        old_time = (datetime.now(timezone.utc) - timedelta(seconds=25)).isoformat()
+        payload = {
+            "market_ticker": "KX-STALE",
+            "yes_bid": "0.40",
+            "yes_ask": "0.45",
+            "yes_bid_size": "100",
+            "yes_ask_size": "100",
+            "exchange_timestamp": old_time,
+        }
+        quote = normalize_kalshi_book(payload, received_at=datetime.now(timezone.utc).isoformat(), max_age_seconds=10.0)
+        self.assertTrue(quote.valid)
+        self.assertTrue(quote.stale)
+        self.assertFalse(quote.is_executable())
+
+
+    def test_ladder_vwap_calculation_and_insufficient_depth(self):
+        """Verifies ladder VWAP across levels and insufficient liquidity detection."""
+        levels = [[0.40, 100.0], [0.42, 200.0], [0.45, 300.0]]
+        # 1. Fill 150: 100 @ 0.40 + 50 @ 0.42 = 40 + 21 = 61 -> 61 / 150 = 0.406667
+        vwap, filled = compute_ladder_vwap(levels, 150.0)
+        self.assertIsNotNone(vwap)
+        self.assertAlmostEqual(vwap, round(61.0 / 150.0, 6))
+        self.assertEqual(filled, 150.0)
+
+        # 2. Target 1000 with only 600 available -> (None, 600.0)
+        vwap_insufficient, filled_part = compute_ladder_vwap(levels, 1000.0)
+        self.assertIsNone(vwap_insufficient)
+        self.assertEqual(filled_part, 600.0)
+
+    def test_fee_schedule_and_cost_engine_separation(self):
+        """Verifies known trading fees separated from configurable slippage."""
+        sched = get_fee_schedule()
+        self.assertEqual(sched.version, DEFAULT_FEE_VERSION)
+
+        # Kalshi fee at P=0.40: min(0.07 * 0.40 * 0.60, 0.02) = min(0.0168, 0.02) = 0.0168
+        fee_k = calculate_venue_taker_fee("kalshi", 0.40, 100.0)
+        self.assertEqual(fee_k["per_unit_fee"], 0.0168)
+        self.assertEqual(fee_k["total_fee"], 1.68)
+
+        # Polymarket 0 bps CLOB taker fee
+        fee_p = calculate_venue_taker_fee("polymarket", 0.38, 100.0)
+        self.assertEqual(fee_p["per_unit_fee"], 0.0)
+        self.assertEqual(fee_p["total_fee"], 0.0)
+
+        # Net opportunity cost model with 10 bps slippage
+        cost_eval = evaluate_net_opportunity_costs(
+            buy_venue="polymarket",
+            sell_venue="kalshi",
+            buy_price=0.38,
+            sell_price=0.42,
+            quantity=100.0,
+            slippage_bps=10.0
+        )
+        # Gross = 0.42 - 0.38 = 0.04 -> $4.00
+        self.assertEqual(cost_eval["gross_spread"], 0.04)
+        self.assertEqual(cost_eval["total_gross_profit"], 4.00)
+        # Kalshi fee at 0.42: min(0.07 * 0.42 * 0.58, 0.02) = 0.017052 -> total $1.7052 -> round(1.71)
+        self.assertEqual(cost_eval["total_known_fees"], round(fee_k["total_fee"] if False else 0.017052 * 100, 4))
+        # Net profit after fees is positive
+        self.assertGreater(cost_eval["total_net_profit"], 0.0)
+        # Slippage cost is separated
+        self.assertGreater(cost_eval["total_slippage_cost"], 0.0)
+
+    def test_opportunity_state_machine_transitions(self):
+        """Verifies candidate vs executable vs stale vs insufficient_liquidity states."""
+        pair = {
+            "polymarket_asset_id": "p_state",
+            "kalshi_ticker": "k_state",
+            "canonical_event": "State Machine Test",
+            "equivalence_mapping": "direct",
+            "expiration": self.future_exp,
+            "verification_status": "verified",
+        }
+        # 1. Executable: Net spread > 0 and available liquidity > 0
+        book_p = {
+            "valid": 1,
+            "best_bid": 0.30,
+            "best_ask": 0.35,
+            "bid_depth": 500,
+            "ask_depth": 500,
+            "exchange_timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        book_k = {
+            "valid": 1,
+            "best_bid": 0.45,
+            "best_ask": 0.50,
+            "bid_depth": 500,
+            "ask_depth": 500,
+            "exchange_timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        res_exec = compute_cross_venue_spread(pair, book_p, book_k)
+        self.assertEqual(res_exec["status"], "executable")
+        self.assertTrue(res_exec["is_arbitrage"])
+
+        # 2. Candidate: Gross spread > 0, but fee eats entire spread (e.g. Poly ask 0.40, Kalshi bid 0.41, fee ~0.017)
+        book_p_tight = {
+            "valid": 1,
+            "best_bid": 0.38,
+            "best_ask": 0.40,
+            "bid_depth": 500,
+            "ask_depth": 500,
+            "exchange_timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        book_k_tight = {
+            "valid": 1,
+            "best_bid": 0.41,
+            "best_ask": 0.45,
+            "bid_depth": 500,
+            "ask_depth": 500,
+            "exchange_timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        res_cand = compute_cross_venue_spread(pair, book_p_tight, book_k_tight)
+        self.assertEqual(res_cand["status"], "candidate")
+        self.assertFalse(res_cand["is_arbitrage"])
+
+        # 3. Insufficient Liquidity: depth is 0
+        book_p_empty = {
+            "valid": 1,
+            "best_bid": 0.30,
+            "best_ask": 0.35,
+            "bid_depth": 0,
+            "ask_depth": 0,
+            "exchange_timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        res_liq = compute_cross_venue_spread(pair, book_p_empty, book_k)
+        self.assertEqual(res_liq["status"], "insufficient_liquidity")
+        self.assertFalse(res_liq["is_arbitrage"])
+
+        # 4. Stale: quote age > 10s or delta > 5s
+        book_p_stale = {
+            "valid": 1,
+            "best_bid": 0.30,
+            "best_ask": 0.35,
+            "bid_depth": 500,
+            "ask_depth": 500,
+            "exchange_timestamp": (datetime.now(timezone.utc) - timedelta(seconds=20)).isoformat()
+        }
+        res_stale = compute_cross_venue_spread(pair, book_p_stale, book_k)
+        self.assertEqual(res_stale["status"], "stale")
+        self.assertFalse(res_stale["is_arbitrage"])
 
 
 if __name__ == "__main__":
