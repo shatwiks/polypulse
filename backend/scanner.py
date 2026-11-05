@@ -25,9 +25,24 @@ def calculate_kalshi_fee(price: float) -> float:
     return info["per_unit_fee"]
 
 
-def calculate_polymarket_fee(price: float) -> float:
-    """Standard Polymarket taker fee per contract."""
-    info = calculate_venue_taker_fee("polymarket", price, 1.0)
+def calculate_polymarket_fee(
+    price: float,
+    quantity: float = 1.0,
+    poly_category: Optional[str] = None,
+    poly_fee_rate: Optional[float] = None,
+    poly_fees_enabled: Optional[bool] = None,
+    poly_token_fee_config: Optional[Dict[str, Any]] = None
+) -> Optional[float]:
+    """Calculates Polymarket taker fee per contract using C * feeRate * P * (1 - P)."""
+    info = calculate_venue_taker_fee(
+        "polymarket",
+        price,
+        quantity,
+        poly_category=poly_category,
+        poly_fee_rate=poly_fee_rate,
+        poly_fees_enabled=poly_fees_enabled,
+        poly_token_fee_config=poly_token_fee_config
+    )
     return info["per_unit_fee"]
 
 
@@ -236,6 +251,17 @@ def compute_cross_venue_spread(
             buy_v, sell_v = "kalshi", "polymarket"
             buy_p, sell_p = kalshi_ask, poly_bid
 
+        poly_token_fee_config = (
+            left.get("token_fee_config")
+            or left.get("fee_config")
+            or pair.get("polymarket_fee_config")
+            or pair.get("token_fee_config")
+        )
+        poly_fee_rate = left.get("fee_rate") if left.get("fee_rate") is not None else pair.get("polymarket_fee_rate")
+        poly_taker_bps = left.get("taker_bps") if left.get("taker_bps") is not None else pair.get("polymarket_taker_bps")
+        poly_fees_enabled = left.get("fees_enabled") if left.get("fees_enabled") is not None else pair.get("polymarket_fees_enabled")
+        poly_category = left.get("category") or pair.get("polymarket_category") or pair.get("category")
+
         cost_eval = evaluate_net_opportunity_costs(
             buy_venue=buy_v,
             sell_venue=sell_v,
@@ -243,11 +269,15 @@ def compute_cross_venue_spread(
             sell_price=sell_p,
             quantity=max(1.0, executable_qty),
             kalshi_ticker=pair.get("kalshi_ticker"),
-            poly_taker_bps=pair.get("polymarket_taker_bps"),
-            poly_fees_enabled=pair.get("polymarket_fees_enabled"),
-            poly_category=pair.get("polymarket_category") or pair.get("category")
+            poly_taker_bps=poly_taker_bps,
+            poly_fees_enabled=poly_fees_enabled,
+            poly_category=poly_category,
+            poly_fee_rate=poly_fee_rate,
+            poly_token_fee_config=poly_token_fee_config,
         )
+        fee_status = cost_eval.get("fee_status", "known")
         net_spread = cost_eval["net_spread"]
+        estimated_net_spread = cost_eval.get("estimated_net_spread")
         best_spread_bps = cost_eval["gross_spread_bps"]
         poly_fee = cost_eval["buy_venue_fee"] if buy_v == "polymarket" else cost_eval["sell_venue_fee"]
         kalshi_fee = cost_eval["buy_venue_fee"] if buy_v == "kalshi" else cost_eval["sell_venue_fee"]
@@ -292,6 +322,17 @@ def compute_cross_venue_spread(
         buy_poly_sell_kalshi = mint_spread
         buy_kalshi_sell_polymarket = merge_spread
 
+        poly_token_fee_config = (
+            left.get("token_fee_config")
+            or left.get("fee_config")
+            or pair.get("polymarket_fee_config")
+            or pair.get("token_fee_config")
+        )
+        poly_fee_rate = left.get("fee_rate") if left.get("fee_rate") is not None else pair.get("polymarket_fee_rate")
+        poly_taker_bps = left.get("taker_bps") if left.get("taker_bps") is not None else pair.get("polymarket_taker_bps")
+        poly_fees_enabled = left.get("fees_enabled") if left.get("fees_enabled") is not None else pair.get("polymarket_fees_enabled")
+        poly_category = left.get("category") or pair.get("polymarket_category") or pair.get("category")
+
         if mint_spread > merge_spread:
             best_spread = mint_spread
             opportunity_type = "mint_both_long" if mint_spread > 0 else "none"
@@ -304,9 +345,11 @@ def compute_cross_venue_spread(
                 quantity=max(1.0, executable_qty),
                 is_inverse_long_both=True,
                 kalshi_ticker=pair.get("kalshi_ticker"),
-                poly_taker_bps=pair.get("polymarket_taker_bps"),
-                poly_fees_enabled=pair.get("polymarket_fees_enabled"),
-                poly_category=pair.get("polymarket_category") or pair.get("category")
+                poly_taker_bps=poly_taker_bps,
+                poly_fees_enabled=poly_fees_enabled,
+                poly_category=poly_category,
+                poly_fee_rate=poly_fee_rate,
+                poly_token_fee_config=poly_token_fee_config,
             )
             strategy_category = "complementary_payoff_parity"
             inventory_requirement = "Long both outcomes: cash capital only (no short inventory required)"
@@ -322,14 +365,18 @@ def compute_cross_venue_spread(
                 quantity=max(1.0, executable_qty),
                 is_inverse_short_both=True,
                 kalshi_ticker=pair.get("kalshi_ticker"),
-                poly_taker_bps=pair.get("polymarket_taker_bps"),
-                poly_fees_enabled=pair.get("polymarket_fees_enabled"),
-                poly_category=pair.get("polymarket_category") or pair.get("category")
+                poly_taker_bps=poly_taker_bps,
+                poly_fees_enabled=poly_fees_enabled,
+                poly_category=poly_category,
+                poly_fee_rate=poly_fee_rate,
+                poly_token_fee_config=poly_token_fee_config,
             )
             strategy_category = "complementary_payoff_parity"
             inventory_requirement = "Short both outcomes: requires pre-existing inventory on both venues or 100% cash collateral"
 
+        fee_status = cost_eval.get("fee_status", "known")
         net_spread = cost_eval["net_spread"]
+        estimated_net_spread = cost_eval.get("estimated_net_spread")
         best_spread_bps = cost_eval["gross_spread_bps"]
         poly_fee = cost_eval["buy_venue_fee"]
         kalshi_fee = cost_eval["sell_venue_fee"]
@@ -371,10 +418,12 @@ def compute_cross_venue_spread(
         status = "stale"
     elif executable_qty <= 0.0:
         status = "insufficient_liquidity"
-    elif net_spread is not None and net_spread > 0.0 and best_spread > 0.0:
+    elif fee_status == "unknown" or net_spread is None or estimated_net_spread is None:
+        status = "candidate"  # Missing/invalid fee config -> cannot claim executable net spread
+    elif estimated_net_spread > 0.0 and net_spread > 0.0 and best_spread > 0.0:
         status = "executable"
     elif best_spread is not None and best_spread > 0.0:
-        status = "candidate"  # Gross spread positive, but net spread after fees <= 0
+        status = "candidate"  # Gross spread positive, but net spread after fees/slippage <= 0
     else:
         status = "candidate"
 
@@ -403,8 +452,13 @@ def compute_cross_venue_spread(
         "best_spread": best_spread,
         "best_spread_bps": best_spread_bps,
         "net_spread": net_spread,
+        "estimated_net_spread": estimated_net_spread,
+        "fee_status": fee_status,
         "poly_fee": poly_fee,
         "kalshi_fee": kalshi_fee,
+        "total_net_profit": cost_eval.get("total_net_profit"),
+        "total_estimated_net_profit": cost_eval.get("total_estimated_net_profit"),
+        "total_slippage_cost": cost_eval.get("total_slippage_cost"),
         "executable_qty": executable_qty,
         "executable_notional": round(executable_qty * (poly_ask if mapping == "direct" else 1.0), 2),
         "opportunity_type": opportunity_type,

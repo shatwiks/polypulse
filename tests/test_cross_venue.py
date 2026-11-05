@@ -130,6 +130,7 @@ class TestCrossVenueIntelligence(unittest.TestCase):
             "equivalence_mapping": "direct",
             "expiration": self.future_exp,
             "verification_status": "verified",
+            "polymarket_category": "finance",
         }
         poly_book = {
             "valid": 1,
@@ -168,6 +169,7 @@ class TestCrossVenueIntelligence(unittest.TestCase):
             "equivalence_mapping": "direct",
             "expiration": self.future_exp,
             "verification_status": "verified",
+            "polymarket_category": "economics",
         }
         poly_book = {
             "valid": 1,
@@ -205,6 +207,7 @@ class TestCrossVenueIntelligence(unittest.TestCase):
             "equivalence_mapping": "inverse",
             "expiration": self.future_exp,
             "verification_status": "verified",
+            "polymarket_category": "politics",
         }
         poly_book = {
             "valid": 1,
@@ -243,6 +246,7 @@ class TestCrossVenueIntelligence(unittest.TestCase):
             "equivalence_mapping": "inverse",
             "expiration": self.future_exp,
             "verification_status": "verified",
+            "polymarket_category": "economics",
         }
         poly_book = {
             "valid": 1,
@@ -484,25 +488,26 @@ class TestCrossVenueIntelligence(unittest.TestCase):
         self.assertEqual(fee_k["per_unit_fee"], 0.0168)
         self.assertEqual(fee_k["total_fee"], 1.68)
 
-        # Polymarket 0 bps CLOB taker fee
-        fee_p = calculate_venue_taker_fee("polymarket", 0.38, 100.0)
+        # Polymarket fee-disabled market: 0.0 fee
+        fee_p = calculate_venue_taker_fee("polymarket", 0.38, 100.0, poly_fees_enabled=False)
         self.assertEqual(fee_p["per_unit_fee"], 0.0)
         self.assertEqual(fee_p["total_fee"], 0.0)
 
-        # Net opportunity cost model with 10 bps slippage
+        # Net opportunity cost model with 10 bps slippage on fee-disabled Polymarket leg
         cost_eval = evaluate_net_opportunity_costs(
             buy_venue="polymarket",
             sell_venue="kalshi",
             buy_price=0.38,
             sell_price=0.42,
             quantity=100.0,
-            slippage_bps=10.0
+            slippage_bps=10.0,
+            poly_fees_enabled=False,
         )
         # Gross = 0.42 - 0.38 = 0.04 -> $4.00
         self.assertEqual(cost_eval["gross_spread"], 0.04)
         self.assertEqual(cost_eval["total_gross_profit"], 4.00)
-        # Kalshi fee at 0.42: min(0.07 * 0.42 * 0.58, 0.02) = 0.017052 -> total $1.7052 -> round(1.71)
-        self.assertEqual(cost_eval["total_known_fees"], round(fee_k["total_fee"] if False else 0.017052 * 100, 4))
+        # Kalshi fee at 0.42: min(0.07 * 0.42 * 0.58, 0.02) = 0.017052 -> total $1.7052
+        self.assertEqual(cost_eval["total_known_fees"], round(0.017052 * 100, 4))
         # Net profit after fees is positive
         self.assertGreater(cost_eval["total_net_profit"], 0.0)
         # Slippage cost is separated
@@ -529,49 +534,104 @@ class TestCrossVenueIntelligence(unittest.TestCase):
         self.assertEqual(fee_p50["total_fee"], 1.40)
 
     def test_polymarket_dynamic_taker_fee(self):
-        """Verifies Polymarket market-specific dynamic taker fees override default 0.0 bps."""
-        # Baseline standard market: 0 bps
-        fee_base = calculate_venue_taker_fee("polymarket", 0.50, 100.0)
-        self.assertEqual(fee_base["total_fee"], 0.0)
+        """
+        Verifies Polymarket official formula fee = round(C * feeRate * P * (1-P), 5),
+        token-specific API fee config preference, unit normalization, and unknown fee handling.
+        """
+        from backend.fees import normalize_polymarket_api_fee_config, normalize_polymarket_fee_rate
 
-        # Dynamic market with 25 bps taker fee: 100 * 0.50 * 0.0025 = $0.125
-        fee_dyn = calculate_venue_taker_fee("polymarket", 0.50, 100.0, poly_taker_bps=25.0)
-        self.assertEqual(fee_dyn["total_fee"], 0.125)
+        # 1. Missing fee config -> classified as unknown, total_fee is None
+        fee_missing = calculate_venue_taker_fee("polymarket", 0.50, 100.0)
+        self.assertEqual(fee_missing["fee_status"], "unknown")
+        self.assertIsNone(fee_missing["total_fee"])
+
+        # 2. Explicitly fee-disabled market -> 0.0 fee
+        fee_disabled = calculate_venue_taker_fee("polymarket", 0.50, 100.0, poly_fees_enabled=False)
+        self.assertEqual(fee_disabled["fee_status"], "known")
+        self.assertEqual(fee_disabled["total_fee"], 0.0)
+
+        # 3. Token-specific API config (Gamma feeSchedule.rate = 0.04) preferred over category fallback
+        token_cfg_gamma = {
+            "feesEnabled": True,
+            "feeType": "finance_prices_fees",
+            "feeSchedule": {"exponent": 1, "rate": 0.04, "takerOnly": True, "rebateRate": 0.25},
+        }
+        fee_from_api = calculate_venue_taker_fee(
+            "polymarket",
+            0.40,
+            100.0,
+            poly_category="geopolitics",  # API config must override category fallback
+            poly_token_fee_config=token_cfg_gamma,
+        )
+        # 100 * 0.04 * 0.40 * 0.60 = 0.96
+        self.assertEqual(fee_from_api["fee_status"], "known")
+        self.assertEqual(fee_from_api["fee_rate"], 0.04)
+        self.assertEqual(fee_from_api["total_fee"], 0.96)
+
+        # 4. CLOB /fee-rate base_fee in bps normalization (e.g. base_fee=500 -> feeRate=0.05)
+        norm_clob = normalize_polymarket_api_fee_config({"base_fee": 500})
+        self.assertEqual(norm_clob["fee_status"], "known")
+        self.assertEqual(norm_clob["fee_rate"], 0.05)
+
+        # 5. Explicit bps override: 400 bps -> feeRate=0.04 -> at P=0.50, C=100: 100 * 0.04 * 0.25 = 1.00
+        fee_bps = calculate_venue_taker_fee("polymarket", 0.50, 100.0, poly_taker_bps=400.0)
+        self.assertEqual(fee_bps["fee_rate"], 0.04)
+        self.assertEqual(fee_bps["total_fee"], 1.00)
+
+        # 6. Invalid fee rate (negative or >1.0 coefficient) -> classified as unknown
+        self.assertIsNone(normalize_polymarket_fee_rate(-0.05, unit="coefficient"))
+        fee_invalid = calculate_venue_taker_fee("polymarket", 0.50, 100.0, poly_fee_rate=-0.04)
+        self.assertEqual(fee_invalid["fee_status"], "unknown")
+        self.assertIsNone(fee_invalid["total_fee"])
 
     def test_polymarket_category_fee_schedules_and_bidirectional_recalculation(self):
         """
-        Verifies dynamic Polymarket fee schedules across Finance, Politics, Economics,
-        fee-free Geopolitics, and tests bidirectional recalculation with two-leg slippage.
+        Verifies official Polymarket category coefficients (Finance 0.04, Politics 0.04,
+        Economics 0.05, Geopolitics 0.00), reference scenarios, inverse two-leg fees,
+        and unknown-fee gating in scanner and cost engine.
         """
         from backend.fees import get_polymarket_market_fee_rate
 
-        # 1. Category fee lookups
+        # 1. Official category coefficient lookups
         fin = get_polymarket_market_fee_rate("finance")
+        self.assertEqual(fin["fee_status"], "known")
         self.assertTrue(fin["fees_enabled"])
-        self.assertEqual(fin["taker_bps"], 20.0)
-
-        econ = get_polymarket_market_fee_rate("economics")
-        self.assertTrue(econ["fees_enabled"])
-        self.assertEqual(econ["taker_bps"], 15.0)
+        self.assertEqual(fin["fee_rate"], 0.04)
 
         pol = get_polymarket_market_fee_rate("politics")
+        self.assertEqual(pol["fee_status"], "known")
         self.assertTrue(pol["fees_enabled"])
-        self.assertEqual(pol["taker_bps"], 10.0)
+        self.assertEqual(pol["fee_rate"], 0.04)
+
+        econ = get_polymarket_market_fee_rate("economics")
+        self.assertEqual(econ["fee_status"], "known")
+        self.assertTrue(econ["fees_enabled"])
+        self.assertEqual(econ["fee_rate"], 0.05)
 
         geo = get_polymarket_market_fee_rate("geopolitics")
+        self.assertEqual(geo["fee_status"], "known")
         self.assertFalse(geo["fees_enabled"])
-        self.assertEqual(geo["taker_bps"], 0.0)
+        self.assertEqual(geo["fee_rate"], 0.0)
 
-        # Custom override
-        custom = get_polymarket_market_fee_rate(custom_taker_bps=25.0)
-        self.assertTrue(custom["fees_enabled"])
-        self.assertEqual(custom["taker_bps"], 25.0)
+        crypto = get_polymarket_market_fee_rate("crypto")
+        self.assertEqual(crypto["fee_rate"], 0.07)
 
-        # 2. Direction 1: Long Poly (Finance, 20 bps) / Short Kalshi (FED series, 0.07 mult)
-        # Poly Ask: 0.40, Kalshi Bid: 0.46, Qty: 100 contracts
-        # Poly taker fee: 100 * 0.40 * 0.0020 = $0.08
-        # Kalshi fee: 100 * 0.07 * 0.46 * 0.54 = 1.7388 -> ceil to whole cents = $1.74
-        cost_dir1 = evaluate_net_opportunity_costs(
+        sports = get_polymarket_market_fee_rate("sports")
+        self.assertEqual(sports["fee_rate"], 0.03)
+
+        # Unrecognized or missing category -> unknown
+        unknown_cat = get_polymarket_market_fee_rate("unrecognized_category")
+        self.assertEqual(unknown_cat["fee_status"], "unknown")
+        self.assertIsNone(unknown_cat["fee_rate"])
+
+        # 2. Expected Reference Example 1:
+        # Quantity: 100, Finance price: 0.40 (Poly Ask 0.40, Kalshi Bid 0.46, FED series)
+        # Polymarket fee: 100 * 0.04 * 0.40 * (1 - 0.40) = $0.96
+        # Kalshi fee: ceil(100 * 0.07 * 0.46 * 0.54 * 100) / 100 = $1.74
+        # Gross spread: $6.00
+        # Two-leg slippage: 100 * (0.40 + 0.46) * 0.0010 = $0.086
+        # Expected net (after fees & slippage): 6.00 - 0.96 - 1.74 - 0.086 = $3.214
+        cost_ex1 = evaluate_net_opportunity_costs(
             buy_venue="polymarket",
             sell_venue="kalshi",
             buy_price=0.40,
@@ -580,26 +640,29 @@ class TestCrossVenueIntelligence(unittest.TestCase):
             slippage_bps=10.0,
             version="v2026.2",
             kalshi_ticker="FED-27DEC",
-            poly_category="finance"
+            poly_category="finance",
         )
-        self.assertEqual(cost_dir1["gross_spread"], 0.06)
-        self.assertEqual(cost_dir1["total_gross_profit"], 6.00)
-        self.assertEqual(cost_dir1["buy_venue_fee"], 0.08)
-        self.assertEqual(cost_dir1["sell_venue_fee"], 1.74)
-        self.assertEqual(cost_dir1["total_known_fees"], 1.82)
-        self.assertAlmostEqual(cost_dir1["total_net_profit"], 4.18, places=4)
-        # Two-leg slippage: buy leg 100 * 0.40 * 0.0010 = 0.040, sell leg 100 * 0.46 * 0.0010 = 0.046 -> total 0.086
-        self.assertEqual(cost_dir1["buy_leg_slippage"], 0.04)
-        self.assertAlmostEqual(cost_dir1["sell_leg_slippage"], 0.046, places=4)
-        self.assertAlmostEqual(cost_dir1["total_slippage_cost"], 0.086, places=4)
-        self.assertAlmostEqual(cost_dir1["total_estimated_net_profit"], 4.094, places=4)
-        self.assertFalse(cost_dir1["is_guaranteed_profit"])
+        self.assertEqual(cost_ex1["fee_status"], "known")
+        self.assertEqual(cost_ex1["gross_spread"], 0.06)
+        self.assertEqual(cost_ex1["total_gross_profit"], 6.00)
+        self.assertEqual(cost_ex1["buy_venue_fee"], 0.96)
+        self.assertEqual(cost_ex1["sell_venue_fee"], 1.74)
+        self.assertEqual(cost_ex1["total_known_fees"], 2.70)
+        self.assertEqual(cost_ex1["total_net_profit"], 3.30)
+        self.assertEqual(cost_ex1["buy_leg_slippage"], 0.04)
+        self.assertEqual(cost_ex1["sell_leg_slippage"], 0.046)
+        self.assertEqual(cost_ex1["total_slippage_cost"], 0.086)
+        self.assertEqual(cost_ex1["total_estimated_net_profit"], 3.214)
+        self.assertFalse(cost_ex1["is_guaranteed_profit"])
 
-        # 3. Direction 2: Long Kalshi (FED series, 0.07 mult) / Short Poly (Politics, 10 bps)
-        # Kalshi Ask: 0.42, Poly Bid: 0.48, Qty: 100 contracts
-        # Kalshi fee: 100 * 0.07 * 0.42 * 0.58 = 1.7052 -> ceil to whole cents = $1.71
-        # Poly taker fee: 100 * 0.48 * 0.0010 = $0.048
-        cost_dir2 = evaluate_net_opportunity_costs(
+        # 3. Expected Reference Example 2:
+        # Quantity: 100, Politics price: 0.48 (Kalshi Ask 0.42, FED series; Poly Bid 0.48)
+        # Polymarket fee: 100 * 0.04 * 0.48 * (1 - 0.48) = $0.9984
+        # Kalshi fee: ceil(100 * 0.07 * 0.42 * 0.58 * 100) / 100 = $1.71
+        # Gross spread: $6.00
+        # Two-leg slippage: 100 * (0.42 + 0.48) * 0.0010 = $0.09
+        # Expected net (after fees & slippage): 6.00 - 1.71 - 0.9984 - 0.09 = $3.2016
+        cost_ex2 = evaluate_net_opportunity_costs(
             buy_venue="kalshi",
             sell_venue="polymarket",
             buy_price=0.42,
@@ -608,27 +671,100 @@ class TestCrossVenueIntelligence(unittest.TestCase):
             slippage_bps=10.0,
             version="v2026.2",
             kalshi_ticker="FED-27DEC",
-            poly_category="politics"
+            poly_category="politics",
         )
-        self.assertEqual(cost_dir2["gross_spread"], 0.06)
-        self.assertEqual(cost_dir2["total_gross_profit"], 6.00)
-        self.assertEqual(cost_dir2["buy_venue_fee"], 1.71)
-        self.assertEqual(cost_dir2["sell_venue_fee"], 0.048)
-        self.assertEqual(cost_dir2["total_known_fees"], 1.758)
-        self.assertAlmostEqual(cost_dir2["total_net_profit"], 4.242, places=4)
-        # Two-leg slippage: buy leg 100 * 0.42 * 0.0010 = 0.042, sell leg 100 * 0.48 * 0.0010 = 0.048 -> total 0.090
-        self.assertEqual(cost_dir2["buy_leg_slippage"], 0.042)
-        self.assertEqual(cost_dir2["sell_leg_slippage"], 0.048)
-        self.assertEqual(cost_dir2["total_slippage_cost"], 0.09)
-        self.assertAlmostEqual(cost_dir2["total_estimated_net_profit"], 4.152, places=4)
-        self.assertFalse(cost_dir2["is_guaranteed_profit"])
+        self.assertEqual(cost_ex2["fee_status"], "known")
+        self.assertEqual(cost_ex2["gross_spread"], 0.06)
+        self.assertEqual(cost_ex2["total_gross_profit"], 6.00)
+        self.assertEqual(cost_ex2["buy_venue_fee"], 1.71)
+        self.assertEqual(cost_ex2["sell_venue_fee"], 0.9984)
+        self.assertEqual(cost_ex2["total_known_fees"], 2.7084)
+        self.assertEqual(cost_ex2["total_net_profit"], 3.2916)
+        self.assertEqual(cost_ex2["buy_leg_slippage"], 0.042)
+        self.assertEqual(cost_ex2["sell_leg_slippage"], 0.048)
+        self.assertEqual(cost_ex2["total_slippage_cost"], 0.09)
+        self.assertEqual(cost_ex2["total_estimated_net_profit"], 3.2016)
+        self.assertFalse(cost_ex2["is_guaranteed_profit"])
 
-        # 4. Economics (15 bps) and fee-free Geopolitics
+        # 4. Economics (0.05) and fee-free Geopolitics (0.00) at P=0.50, C=100
+        # Economics: 100 * 0.05 * 0.50 * 0.50 = $1.25
         fee_econ = calculate_venue_taker_fee("polymarket", 0.50, 100.0, poly_category="economics")
-        self.assertEqual(fee_econ["total_fee"], 0.075)  # 100 * 0.50 * 0.0015 = 0.075
+        self.assertEqual(fee_econ["total_fee"], 1.25)
 
         fee_geo = calculate_venue_taker_fee("polymarket", 0.50, 100.0, poly_category="geopolitics")
         self.assertEqual(fee_geo["total_fee"], 0.0)
+
+        # 5. Five-decimal rounding verification (e.g., C=1, feeRate=0.04, P=0.333 -> 1 * 0.04 * 0.333 * 0.667 = 0.00888444 -> 0.00888)
+        fee_5dec = calculate_venue_taker_fee("polymarket", 0.333, 1.0, poly_category="finance")
+        self.assertEqual(fee_5dec["total_fee"], 0.00888)
+
+        # 6. Inverse opportunity recalculations (both legs independently charged fees & slippage):
+        # 6a. Inverse Long Both (mint_both_long): Poly Politics Ask 0.45, Kalshi FED Ask 0.48, C=100
+        # Poly fee: 100 * 0.04 * 0.45 * 0.55 = $0.99
+        # Kalshi fee: ceil(100 * 0.07 * 0.48 * 0.52 * 100) / 100 = ceil(174.72) / 100 = $1.75
+        # Gross: $7.00, Fees: $2.74, Net after fees: $4.26, Two-leg slippage: $0.093, Estimated net: $4.167
+        cost_inv_long = evaluate_net_opportunity_costs(
+            buy_venue="polymarket",
+            sell_venue="kalshi",
+            buy_price=0.45,
+            sell_price=0.48,
+            quantity=100.0,
+            slippage_bps=10.0,
+            is_inverse_long_both=True,
+            version="v2026.2",
+            kalshi_ticker="FED-27DEC",
+            poly_category="politics",
+        )
+        self.assertEqual(cost_inv_long["gross_spread"], 0.07)
+        self.assertEqual(cost_inv_long["total_gross_profit"], 7.00)
+        self.assertEqual(cost_inv_long["buy_venue_fee"], 0.99)
+        self.assertEqual(cost_inv_long["sell_venue_fee"], 1.75)
+        self.assertEqual(cost_inv_long["total_known_fees"], 2.74)
+        self.assertEqual(cost_inv_long["total_net_profit"], 4.26)
+        self.assertEqual(cost_inv_long["total_slippage_cost"], 0.093)
+        self.assertEqual(cost_inv_long["total_estimated_net_profit"], 4.167)
+
+        # 6b. Inverse Short Both (merge_both_short): Poly Economics Bid 0.54, Kalshi FED Bid 0.52, C=100
+        # Poly fee: 100 * 0.05 * 0.54 * 0.46 = $1.242
+        # Kalshi fee: ceil(100 * 0.07 * 0.52 * 0.48 * 100) / 100 = ceil(174.72) / 100 = $1.75
+        # Gross: $6.00, Fees: $2.992, Net after fees: $3.008, Two-leg slippage: $0.106, Estimated net: $2.902
+        cost_inv_short = evaluate_net_opportunity_costs(
+            buy_venue="polymarket",
+            sell_venue="kalshi",
+            buy_price=0.54,
+            sell_price=0.52,
+            quantity=100.0,
+            slippage_bps=10.0,
+            is_inverse_short_both=True,
+            version="v2026.2",
+            kalshi_ticker="FED-27DEC",
+            poly_category="economics",
+        )
+        self.assertEqual(cost_inv_short["gross_spread"], 0.06)
+        self.assertEqual(cost_inv_short["total_gross_profit"], 6.00)
+        self.assertEqual(cost_inv_short["buy_venue_fee"], 1.242)
+        self.assertEqual(cost_inv_short["sell_venue_fee"], 1.75)
+        self.assertEqual(cost_inv_short["total_known_fees"], 2.992)
+        self.assertEqual(cost_inv_short["total_net_profit"], 3.008)
+        self.assertEqual(cost_inv_short["total_slippage_cost"], 0.106)
+        self.assertEqual(cost_inv_short["total_estimated_net_profit"], 2.902)
+
+        # 7. Missing fee configuration in scanner -> fee_status == "unknown", never executable
+        pair_missing_fee = {
+            "polymarket_asset_id": "p_unknown_fee",
+            "kalshi_ticker": "FED-27DEC",
+            "canonical_event": "Unknown Fee Market",
+            "equivalence_mapping": "direct",
+            "expiration": self.future_exp,
+            "verification_status": "verified",
+        }
+        book_p = {"valid": 1, "best_bid": 0.38, "best_ask": 0.40, "bid_depth": 100, "ask_depth": 100}
+        book_k = {"valid": 1, "best_bid": 0.46, "best_ask": 0.49, "bid_depth": 100, "ask_depth": 100}
+        spread_unknown = compute_cross_venue_spread(pair_missing_fee, book_p, book_k)
+        self.assertEqual(spread_unknown["fee_status"], "unknown")
+        self.assertIsNone(spread_unknown["net_spread"])
+        self.assertEqual(spread_unknown["status"], "candidate")
+        self.assertFalse(spread_unknown["is_arbitrage"])
 
     def test_expired_contract_revalidation_against_current_time(self):
         """Verifies that contracts expiring before November 5, 2026 are rejected as expired."""
@@ -657,6 +793,7 @@ class TestCrossVenueIntelligence(unittest.TestCase):
             "equivalence_mapping": "direct",
             "expiration": self.future_exp,
             "verification_status": "verified",
+            "polymarket_category": "finance",
         }
         # 1. Executable: Net spread > 0 and available liquidity > 0
         book_p = {

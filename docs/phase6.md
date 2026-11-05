@@ -117,32 +117,47 @@ $$\text{Net Spread} = \text{Gross Spread} - \text{Fee}_{\text{buy\_venue}} - \te
   - Standard series (`FED`, `INTRATE`, `CPI`, `REC`, `POL`): multiplier **$0.07$ (7%)**, capped at $\$0.02$ per contract.
   - Index series (`INDEX`, `SPX`, `NASDAQ`): multiplier **$0.035$ (3.5%)**, capped at $\$0.0175$ per contract.
   - Rounding rule: `ceil_whole_cents` at order level; minimum fee: $\$0.01$ per executed order.
-- **Polymarket Dynamic & Category Fee Model**:
-  Polymarket is not universally fee-free. Taker fees are resolved per-market according to active schedule and category defaults:
-  - **Finance / Rate Derivatives** (`finance`): 20.0 bps taker fee ($0.0020 \times P_{\text{exec}}$), fees enabled.
-  - **Economics / Macro Indicators** (`economics`): 15.0 bps taker fee ($0.0015 \times P_{\text{exec}}$), fees enabled.
-  - **Politics / Elections** (`politics`): 10.0 bps taker fee ($0.0010 \times P_{\text{exec}}$), fees enabled.
-  - **Geopolitics / Baseline CLOB** (`geopolitics`, `default`): 0.0 bps fee-free.
-  - Dynamic rate overrides read from market metadata take precedence when present.
+- **Polymarket Official Taker Fee Formula & API Normalization**:
+  Polymarket taker fees are non-linear in price variance $P(1 - P)$, rounded to 5 decimal places:
+  $$\text{fee} = \text{round}\left(C \times \text{feeRate} \times P \times (1 - P), 5\right)$$
+  where $\text{feeRate}$ is a **dimensionless formula coefficient** (NOT a simple flat percentage of contract notional).
+  - **Resolution Precedence**:
+    1. **Token-Specific Official API Configuration**: Prefers the market/token fee configuration retrieved from Polymarket Gamma (`/markets?clob_token_ids=<id>`) or CLOB (`/fee-rate?token_id=<id>`). Unit normalization explicitly converts dimensionless `feeSchedule.rate` $\in [0, 1]$ directly and basis-point fields (`base_fee`, `taker_base_fee`, `fee_rate_bps`) via $\text{bps} / 10{,}000.0$.
+    2. **Explicit Rate / Fee-Disabled Flag**: Honors explicit `poly_fee_rate`, `poly_taker_bps`, or `fees_enabled = False` ($\text{feeRate} = 0.0$).
+    3. **Official Category Coefficients (`POLYMARKET_CATEGORY_FEES`)**:
+       - **Finance** (`finance`, `finance_prices_fees`): $\text{feeRate} = 0.04$
+       - **Politics** (`politics`, `politics_fees`): $\text{feeRate} = 0.04$
+       - **Economics** (`economics`, `economics_fees`): $\text{feeRate} = 0.05$
+       - **Geopolitics** (`geopolitics`, fee-free): $\text{feeRate} = 0.00$
+       - **Other Official Categories**: Crypto $0.07$, Sports $0.03$, Tech $0.04$, Culture $0.05$, Weather $0.05$, General/Other $0.05$.
+    4. **Missing or Invalid Fee Configuration**: If the fee configuration is missing or invalid, the fee is classified as `fee_status = "unknown"`, `net_spread = None`, and the scanner **never** claims a positive executable net spread (`status = "candidate"`, `is_arbitrage = False`).
 - **Estimated Slippage Across Both Execution Legs**:
   Cross-venue execution requires entering two distinct market legs. The slippage buffer ($S_{\text{bps}} = 10\text{ bps}$) is applied per leg across each leg's notional value:
   $$\text{Slippage}_{\text{buy}} = P_{\text{buy}} \times \frac{S_{\text{bps}}}{10{,}000} \times Q, \quad \text{Slippage}_{\text{sell}} = P_{\text{sell}} \times \frac{S_{\text{bps}}}{10{,}000} \times Q$$
   $$\text{Total Slippage Cost} = \text{Slippage}_{\text{buy}} + \text{Slippage}_{\text{sell}}$$
-- **Bidirectional Execution & Worked Examples**:
-  - **Direction 1 (Long Poly / Short Kalshi)**: 100 contracts, Finance market. Poly Ask: 0.40, Kalshi Bid: 0.46 (`FED` series).
-    - Gross Spread: $\$0.46 - \$0.40 = +\$0.06$ ($\$6.00$ on 100 contracts).
-    - Poly Taker Fee (20 bps): $100 \times 0.40 \times 0.0020 = \$0.08$.
-    - Kalshi Taker Fee (7%, ceil cents): $\lceil 100 \times 0.07 \times 0.46 \times 0.54 \times 100 \rceil / 100 = \$1.74$.
-    - Total Known Fees: $\$1.82$; Net Profit after Fees: $\$4.18$.
-    - Two-Leg Slippage: Buy leg $\$0.040$ + Sell leg $\$0.046$ = $\$0.086$.
-    - Estimated Net Profit: $\$4.094$ ($\$0.04094$ per contract).
-  - **Direction 2 (Long Kalshi / Short Poly)**: 100 contracts, Politics market. Kalshi Ask: 0.42 (`FED` series), Poly Bid: 0.48.
-    - Gross Spread: $\$0.48 - \$0.42 = +\$0.06$ ($\$6.00$ on 100 contracts).
-    - Kalshi Taker Fee (7%, ceil cents): $\lceil 100 \times 0.07 \times 0.42 \times 0.58 \times 100 \rceil / 100 = \$1.71$.
-    - Poly Taker Fee (10 bps): $100 \times 0.48 \times 0.0010 = \$0.048$.
-    - Total Known Fees: $\$1.758$; Net Profit after Fees: $\$4.242$.
-    - Two-Leg Slippage: Buy leg $\$0.042$ + Sell leg $\$0.048$ = $\$0.090$.
-    - Estimated Net Profit: $\$4.152$ ($\$0.04152$ per contract).
+- **Reference Scenarios (Direct & Inverse Execution)**:
+  *(Note: These are deterministic reference scenarios verifying mathematical correctness, not live trading results.)*
+  - **Reference Example 1 (Direct: Long Poly Finance / Short Kalshi FED)**:
+    - Quantity: $C = 100$, Poly Finance Ask: $0.40$ ($\text{feeRate} = 0.04$), Kalshi Bid: $0.46$ (`FED` series, $0.07$ multiplier).
+    - Gross Spread: $\$0.46 - \$0.40 = \$0.06/\text{contract} \implies \mathbf{\$6.00}$.
+    - Polymarket Fee: $\text{round}(100 \times 0.04 \times 0.40 \times 0.60, 5) = \mathbf{\$0.96}$.
+    - Kalshi Fee: $\lceil 100 \times 0.07 \times 0.46 \times 0.54 \times 100 \rceil / 100 = \lceil 173.88 \rceil / 100 = \mathbf{\$1.74}$.
+    - Total Known Fees: $\$0.96 + \$1.74 = \$2.70$; Net After Known Fees: $\$3.30$.
+    - Two-Leg Slippage (10 bps/leg): $\$0.040 + \$0.046 = \mathbf{\$0.086}$.
+    - Expected Net (after fees & slippage): $\$6.00 - \$0.96 - \$1.74 - \$0.086 = \mathbf{\$3.214}$ ($\$0.03214/\text{contract}$).
+  - **Reference Example 2 (Direct: Long Kalshi FED / Short Poly Politics)**:
+    - Quantity: $C = 100$, Kalshi Ask: $0.42$ (`FED` series, $0.07$ multiplier), Poly Politics Bid: $0.48$ ($\text{feeRate} = 0.04$).
+    - Gross Spread: $\$0.48 - \$0.42 = \$0.06/\text{contract} \implies \mathbf{\$6.00}$.
+    - Polymarket Fee: $\text{round}(100 \times 0.04 \times 0.48 \times 0.52, 5) = \mathbf{\$0.9984}$.
+    - Kalshi Fee: $\lceil 100 \times 0.07 \times 0.42 \times 0.58 \times 100 \rceil / 100 = \lceil 170.52 \rceil / 100 = \mathbf{\$1.71}$.
+    - Total Known Fees: $\$1.71 + \$0.9984 = \$2.7084$; Net After Known Fees: $\$3.2916$.
+    - Two-Leg Slippage (10 bps/leg): $\$0.042 + \$0.048 = \mathbf{\$0.090}$.
+    - Expected Net (after fees & slippage): $\$6.00 - \$1.71 - \$0.9984 - \$0.090 = \mathbf{\$3.2016}$ ($\$0.032016/\text{contract}$).
+  - **Inverse Example 3 (Complementary Long Both `mint_both_long`)**:
+    - Quantity: $C = 100$, Poly Politics Ask: $0.45$ ($\text{feeRate} = 0.04$), Kalshi FED Ask: $0.48$ ($0.07$ multiplier).
+    - Gross Spread: $100 \times (1.00 - [0.45 + 0.48]) = \mathbf{\$7.00}$.
+    - Polymarket Fee: $100 \times 0.04 \times 0.45 \times 0.55 = \mathbf{\$0.99}$; Kalshi Fee: $\lceil 100 \times 0.07 \times 0.48 \times 0.52 \times 100 \rceil / 100 = \mathbf{\$1.75}$.
+    - Two-Leg Slippage: $\$0.045 + \$0.048 = \mathbf{\$0.093}$; Expected Net: $\$7.00 - \$2.74 - \$0.093 = \mathbf{\$4.167}$.
 - **No Guaranteed Profit**: PolyPulse enforces `is_guaranteed_profit = False` across all opportunities. Payoff parity and spreads are subject to execution delays, partial fills, capital lockup, and resolution oracle divergence.
 
 ---
@@ -204,21 +219,24 @@ Microbenchmark execution on local development hardware (AMD Ryzen / Windows 11 /
 
 | Operation | Throughput | Latency | Execution Model |
 |---|---|---|---|
-| **Book Normalization** | 56,083.34 ops/sec | 17.83 us/op | Millionth-tick integer scaling & synthetic quote synthesis |
-| **Ladder VWAP (5 levels)** | 355,224.52 ops/sec | 2.82 us/op | Vectorized multi-tier orderbook depth traversal |
-| **Fee Schedule Engine (`v2026.2`)** | 67,339.25 ops/sec | 14.85 us/op | Kalshi CFTC series multiplier + ceil-cent rounding |
-| **Full Scanner Pair Evaluation** | 13,125.86 pairs/sec | 76.19 us/pair | Full 8-state gating, freshness, VWAP, and fee evaluation |
+| **Book Normalization** | 71,070.79 ops/sec | 14.070 us/op | Millionth-tick integer scaling & synthetic quote synthesis |
+| **Ladder VWAP (5 levels)** | 296,430.06 ops/sec | 3.373 us/op | Vectorized multi-tier orderbook depth traversal |
+| **Fee Schedule Engine (`v2026.2`)** | 45,206.64 ops/sec | 22.121 us/op | Polymarket `C*feeRate*P*(1-P)` + Kalshi CFTC multiplier + ceil-cent rounding |
+| **Full Scanner Pair Evaluation** | 12,675.76 pairs/sec | 78.891 us/pair | Full 8-state gating, freshness, VWAP, and fee evaluation |
 
-### ClickHouse Historical Analytics Latency (Persistent Client Pool)
-- `top_spread_pairs`: **p50 = 33.20 ms** | p95 = 42.03 ms
-- `opportunity_frequency`: **p50 = 27.59 ms** | p95 = 37.04 ms
-- `duration_stats`: **p50 = 24.75 ms** | p95 = 26.56 ms
-- `venue_comparison`: **p50 = 21.29 ms** | p95 = 25.80 ms
-- `quote_freshness`: **p50 = 22.00 ms** | p95 = 25.50 ms
-- Server-side execution elapsed time: **4.13 ms** (down from 1,035 ms by eliminating Windows IPv6 DNS timeout and pooling HTTP connections).
+### ClickHouse Historical Analytics Latency (100 Measured Iterations After 5 Warm-up)
+Measured against a populated dataset of **5,000 spread observations** and **2,500 arbitrage opportunities** across 4 market pairs:
+
+| Analytical Query | Rows Read | Bytes Read | Server Exec p50 / p95 | Client RTT p50 / p95 |
+|---|---:|---:|---:|---:|
+| **`top_spread_pairs`** | 5,000 | 577,592 B | **14.7 ms** / 29.8 ms | **27.4 ms** / 43.4 ms |
+| **`opportunity_frequency`** | 5,000 | 415,055 B | **13.0 ms** / 22.5 ms | **25.8 ms** / 38.1 ms |
+| **`duration_stats`** | 2,500 | 90,000 B | **6.5 ms** / 8.4 ms | **18.4 ms** / 23.6 ms |
+| **`venue_comparison`** | 2,500 | 127,606 B | **7.8 ms** / 11.1 ms | **19.4 ms** / 25.3 ms |
+| **`quote_freshness`** | 5,000 | 100,000 B | **6.8 ms** / 9.1 ms | **18.5 ms** / 24.0 ms |
 
 > [!NOTE]
-> Microbenchmarks evaluate synthetic in-memory test fixtures for algorithmic throughput. Zero live exchange orders were executed.
+> Microbenchmarks 1–4 evaluate synthetic in-memory test fixtures for algorithmic throughput. ClickHouse benchmarks execute 100 measured iterations after 5 warm-up iterations against populated tables reading real rows. Zero live exchange orders were executed.
 
 ---
 
@@ -226,13 +244,13 @@ Microbenchmark execution on local development hardware (AMD Ryzen / Windows 11 /
 
 | Component | Test Suite | Tests | Result |
 |---|---|---|---|
-| **Phase 6 Cross-Venue Intelligence** | `tests/test_cross_venue.py` | 26 | **26/26 PASSED** |
+| **Phase 6 Cross-Venue Intelligence** | `tests/test_cross_venue.py` | 27 | **27/27 PASSED** |
 | **Phase 5 Wallet Intelligence & Markout** | `tests/test_wallet_markout.py` | 28 | **28/28 PASSED** |
 | **Phase 4 ClickHouse Analytics** | `tests/test_clickhouse_analytics.py` | 16 | **16/16 PASSED** |
 | **Phase 3 C++ Engine & Orderbook** | `tests/test_phase3.py` | 10 | **10/10 PASSED** |
 | **Phase 2 Ingestion & State** | `tests/test_phase2.py` | 19 | **19/19 PASSED** |
 | **End-to-End Pipeline** | `tests/test_pipeline.py` | 3 | **3/3 PASSED** |
-| **Total Test Suite** | `python -m pytest tests/` | 103 | **102 PASSED, 1 SKIPPED** (Live ClickHouse) |
+| **Total Test Suite** | `python -m pytest tests/` | 104 | **103 PASSED, 1 SKIPPED** (Live ClickHouse) |
 | **C++20 Microstructure Engine** | `python scripts/build_engine.py --test` | Suite | **ALL PASSED** |
 | **React 19 Terminal Workspace** | `npm --prefix frontend run build` | 1,578 modules | **PASSED (0 errors, 85.65 kB gzip)** |
 

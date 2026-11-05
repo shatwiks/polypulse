@@ -71,7 +71,8 @@ def benchmark_fee_engine(iterations=100_000):
             buy_price=0.38,
             sell_price=0.45,
             quantity=250.0,
-            slippage_bps=10.0
+            slippage_bps=10.0,
+            poly_category="finance",
         )
     elapsed = time.perf_counter() - start
 
@@ -89,7 +90,8 @@ def benchmark_scanner_pair_evaluation(iterations=50_000):
         "equivalence_mapping": "direct",
         "resolution_source": "FOMC Release",
         "expiration": "2026-12-31T23:59:59+00:00",
-        "verification_status": "verified"
+        "verification_status": "verified",
+        "polymarket_category": "finance",
     }
     now = datetime.now(timezone.utc)
     poly_book = {
@@ -246,7 +248,7 @@ def populate_benchmark_dataset(ch_url: str, min_spreads: int = 5000, min_opps: i
                 client.post("/", params={"query": "INSERT INTO polypulse.arbitrage_opportunities FORMAT JSONEachRow", "date_time_input_format": "best_effort"}, content=payload)
 
 
-async def benchmark_clickhouse_queries():
+async def benchmark_clickhouse_queries(iterations: int = 100, warmup_iterations: int = 5):
     ch_url = os.getenv("CLICKHOUSE_URL") or "http://polypulse:7CC8CA94DAFA6F05466B7DAE01F73EFC@127.0.0.1:8123"
     populate_benchmark_dataset(ch_url)
     analytics = ClickHouseAnalytics(ch_url)
@@ -334,13 +336,18 @@ async def benchmark_clickhouse_queries():
 
     telemetry_results = {}
     for query_name, sql, params in queries:
+        # Per-query warm-up iterations (not measured)
+        for _ in range(warmup_iterations):
+            await analytics.execute_query_with_telemetry(sql, params)
+
         client_rtts = []
         server_execs = []
         last_rows_read = 0
         last_bytes_read = 0
         last_returned = 0
 
-        for _ in range(10):
+        # Measured iterations (100 iterations)
+        for _ in range(iterations):
             res = await analytics.execute_query_with_telemetry(sql, params)
             client_rtts.append(res.get("client_rtt_ms", 0.0))
             server_execs.append(res.get("server_elapsed_ms", 0.0))
@@ -350,12 +357,15 @@ async def benchmark_clickhouse_queries():
 
         client_rtts.sort()
         server_execs.sort()
+        p95_idx = min(len(client_rtts) - 1, int(0.95 * len(client_rtts)))
 
         telemetry_results[query_name] = {
+            "iterations": iterations,
+            "warmup_iterations": warmup_iterations,
             "client_rtt_p50": round(statistics.median(client_rtts), 2),
-            "client_rtt_p95": round(client_rtts[int(0.95 * len(client_rtts))], 2),
+            "client_rtt_p95": round(client_rtts[p95_idx], 2),
             "server_exec_p50": round(statistics.median(server_execs), 2),
-            "server_exec_p95": round(server_execs[int(0.95 * len(server_execs))], 2),
+            "server_exec_p95": round(server_execs[p95_idx], 2),
             "rows_read": last_rows_read,
             "bytes_read": last_bytes_read,
             "rows_returned": last_returned
@@ -392,11 +402,11 @@ def main():
 
     # 5. ClickHouse Queries
     print("-" * 78)
-    print(" ClickHouse Historical Cross-Venue Analytics Latency (Populated Dataset):")
+    print(" ClickHouse Historical Cross-Venue Analytics Latency (100 Measured Iterations After 5 Warm-up):")
     print(f" {'Query Name':<22} | {'Rows Read':>9} | {'Bytes Read':>10} | {'Server p50/p95':>15} | {'Client RTT p50/p95':>17}")
     print("-" * 78)
     try:
-        ch_times = asyncio.run(benchmark_clickhouse_queries())
+        ch_times = asyncio.run(benchmark_clickhouse_queries(iterations=100, warmup_iterations=5))
         for q, stats in ch_times.items():
             server_str = f"{stats['server_exec_p50']:.1f}/{stats['server_exec_p95']:.1f} ms"
             client_str = f"{stats['client_rtt_p50']:.1f}/{stats['client_rtt_p95']:.1f} ms"
@@ -405,7 +415,7 @@ def main():
         print(f"    - ClickHouse queries skipped ({exc})")
 
     print("-" * 78)
-    print(" NOTE: ClickHouse benchmarks executed against populated benchmark tables reading real rows.")
+    print(" NOTE: ClickHouse benchmarks executed 100 measured iterations after warm-up against populated tables.")
     print(" Microbenchmarks 1-4 evaluate memory fixtures for algorithmic throughput.")
     print("=" * 78)
 

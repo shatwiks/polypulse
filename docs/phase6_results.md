@@ -19,9 +19,11 @@ This document establishes the empirical proof and formal ground truth for all Ph
 3. **Synthetic Payoff Parity vs. CTF Minting**:
    - Cross-venue complementary positions ($Poly_{\text{YES}} \equiv Kalshi_{\text{NO}}$) are **synthetic payoff parity strategies**, NOT on-chain CTF minting or merging.
    - On-chain CTF minting/merging refers exclusively to interacting with the Gnosis CTF exchange contract on Polygon via USDC collateral.
-4. **Execution Cost Realism & Official CFTC Cent Rounding**:
-   - Taker fees on Kalshi are computed under the official CFTC schedule using series-specific multipliers (`0.07` standard, `0.035` index) and **order-level ceiling rounding to whole cents** (`ceil_whole_cents`).
-   - Polymarket taker fees are market-specific (0 bps baseline, dynamic 10–50 bps on specialized markets).
+4. **Execution Cost Realism & Official Polymarket / CFTC Fee Schedules**:
+   - **Kalshi (`v2026.2`)**: Taker fees are computed under the official CFTC schedule using series-specific multipliers (`0.07` standard, `0.035` index) and **order-level ceiling rounding to whole cents** (`ceil_whole_cents`).
+   - **Polymarket Official Taker Fee Formula**:
+     $$\text{fee} = \text{round}\left(C \times \text{feeRate} \times P \times (1 - P), 5\right)$$
+     where $\text{feeRate}$ is a dimensionless formula coefficient (Finance `0.04`, Politics `0.04`, Economics `0.05`, Geopolitics `0.00`, Crypto `0.07`, Sports `0.03`), NOT a flat percentage of contract notional. Token-specific API fee configurations (`feeSchedule.rate`, `base_fee`) take precedence over category coefficients, and missing/invalid fee configs are classified as `fee_status = "unknown"` (never claiming an executable net spread).
 5. **No Guaranteed or Riskless Profit**:
    - Cross-venue execution carries structural risks: **legging risk**, **partial fills** (unhedged directional exposure), **settlement/oracle divergence** (UMA dispute vs. CFTC regulatory ruling), and **capital lockup**.
    - Selling requires pre-existing token inventory or 100% cash collateral ($1.00/contract) to mint complete sets before selling; binary prediction markets do not support naked short selling.
@@ -71,8 +73,8 @@ All 27 cross-venue specific unit and integration tests passed in 3.51 seconds:
 | `test_ladder_vwap_insufficient_depth` | `scanner.py` | Return `None` when target qty exceeds available book | **PASS** |
 | `test_kalshi_cftc_fee_schedule` | `fees.py` | Legacy v2026.1 unrounded formula baseline | **PASS** |
 | `test_fee_schedule_v2026_2_series_multipliers_and_cftc_rounding` | `fees.py` | Official CFTC series multipliers & ceil-cent rounding | **PASS** |
-| `test_polymarket_dynamic_taker_fee` | `fees.py` | Market-specific dynamic taker fee override (25 bps) | **PASS** |
-| `test_polymarket_category_fee_schedules_and_bidirectional_recalculation` | `fees.py` | Finance (20 bps), Economics (15 bps), Politics (10 bps), fee-free Geopolitics, and dual-leg slippage | **PASS** |
+| `test_polymarket_dynamic_taker_fee` | `fees.py` | Official `C*feeRate*P*(1-P)` formula, API config preference, bps normalization & unknown fee gating | **PASS** |
+| `test_polymarket_category_fee_schedules_and_bidirectional_recalculation` | `fees.py` | Finance (0.04), Politics (0.04), Economics (0.05), Geopolitics (0.00), Reference Examples 1 & 2, and inverse two-leg fees | **PASS** |
 | `test_expired_contract_revalidation_against_current_time` | `scanner.py` | Contracts expiring before 2026-11-05 rejected as expired | **PASS** |
 | `test_polymarket_clob_fee` | `fees.py` | Standard 0.00% taker fee verification | **PASS** |
 | `test_net_spread_with_slippage_buffer` | `fees.py` | Gross spread minus fees minus 10 bps slippage across both legs | **PASS** |
@@ -116,77 +118,71 @@ dist/assets/index-CPUDegqg.js          289.99 kB │ gzip: 85.65 kB
 
 ## 3. Mathematical Models, Fee Rounding & Risk Clarifications
 
-### 3.1 Direct Cross-Venue Spread with Official CFTC Fee Rounding
+### 3.1 Official Polymarket & Kalshi Fee Reference Scenarios (Direct Execution)
 
-#### Input Scenario
-- Target execution quantity: $C = 80\text{ contracts}$
-- Polymarket: Best Ask $P^{\text{poly}}_{\text{ask}} = \$0.5200$, Ask Qty: $150$
-- Kalshi: Best Bid $P^{\text{kalshi}}_{\text{bid}} = \$0.5800$, Bid Qty: $80$, Series: `FED-27DEC` (multiplier $0.07$)
+*(Note: The following are deterministic reference scenarios verifying mathematical correctness, not live trading results.)*
 
-#### Execution Steps & Exact Rounding Math
-1. **Top-of-Book Gross Spread**:
-   $$\text{Spread}_{\text{gross}} = P^{\text{kalshi}}_{\text{bid}} - P^{\text{poly}}_{\text{ask}} = 0.5800 - 0.5200 = +\$0.0600\text{ }(+1{,}153.85\text{ bps})$$
-   $$\text{Total Gross Profit} = 80 \times \$0.0600 = \$4.8000$$
+#### Reference Example 1: Long Polymarket (Finance) / Short Kalshi (`FED` Series)
+- **Quantity**: $C = 100\text{ contracts}$
+- **Polymarket Finance Ask**: $P^{\text{poly}}_{\text{ask}} = \$0.4000$, Official Category Coefficient $\text{feeRate} = 0.04$
+- **Kalshi Bid**: $P^{\text{kalshi}}_{\text{bid}} = \$0.4600$, Series `FED-27DEC` (multiplier $0.07$)
+- **Calculation Breakdown**:
+  1. **Gross Spread**: $(\$0.4600 - \$0.4000) \times 100 = \mathbf{\$6.00}$
+  2. **Polymarket Taker Fee**: $\text{round}(100 \times 0.04 \times 0.40 \times (1 - 0.40), 5) = \mathbf{\$0.96}$
+  3. **Kalshi Official CFTC Taker Fee (`v2026.2`)**: $\lceil 100 \times 0.07 \times 0.46 \times 0.54 \times 100 \rceil / 100 = \lceil 173.88 \rceil / 100 = \mathbf{\$1.74}$
+  4. **Total Known Fees**: $\$0.96 + \$1.74 = \$2.70 \implies$ **Net After Known Fees**: $\$3.30$
+  5. **Two-Leg Slippage (10 bps per leg)**: $100 \times (0.40 + 0.46) \times 0.0010 = \$0.040 + \$0.046 = \mathbf{\$0.086}$
+  6. **Expected Net Profit (after fees & slippage)**: $\$6.00 - \$0.96 - \$1.74 - \$0.086 = \mathbf{\$3.214}$ ($\$0.03214/\text{contract}$)
 
-2. **Kalshi Official CFTC Taker Fee (`v2026.2` with Ceil-Cent Rounding)**:
-   - Raw fee calculation in cents:
-     $$\text{raw\_cents} = \text{multiplier} \times C \times P \times (1 - P) \times 100$$
-     $$\text{raw\_cents} = 0.07 \times 80 \times 0.58 \times (1 - 0.58) \times 100 = 0.07 \times 80 \times 0.58 \times 0.42 \times 100 = 136.416\text{ cents}$$
-   - Applying official CFTC order-level ceiling rounding:
-     $$\text{total\_cents} = \lceil 136.416 \rceil = 137\text{ cents} = \$1.3700$$
-   - Cap check: $C \times \$0.02 = 80 \times \$0.02 = \$1.60$. Since $\$1.37 \le \$1.60$, the fee is $\$1.3700$.
-   - Effective fee per contract: $\$1.37 / 80 = \$0.017125$ (distinct from unrounded $\$0.017052$).
+#### Reference Example 2: Long Kalshi (`FED` Series) / Short Polymarket (Politics)
+- **Quantity**: $C = 100\text{ contracts}$
+- **Kalshi Ask**: $P^{\text{kalshi}}_{\text{ask}} = \$0.4200$, Series `FED-27DEC` (multiplier $0.07$)
+- **Polymarket Politics Bid**: $P^{\text{poly}}_{\text{bid}} = \$0.4800$, Official Category Coefficient $\text{feeRate} = 0.04$
+- **Calculation Breakdown**:
+  1. **Gross Spread**: $(\$0.4800 - \$0.4200) \times 100 = \mathbf{\$6.00}$
+  2. **Polymarket Taker Fee**: $\text{round}(100 \times 0.04 \times 0.48 \times (1 - 0.48), 5) = \mathbf{\$0.9984}$
+  3. **Kalshi Official CFTC Taker Fee (`v2026.2`)**: $\lceil 100 \times 0.07 \times 0.42 \times 0.58 \times 100 \rceil / 100 = \lceil 170.52 \rceil / 100 = \mathbf{\$1.71}$
+  4. **Total Known Fees**: $\$1.71 + \$0.9984 = \$2.7084 \implies$ **Net After Known Fees**: $\$3.2916$
+  5. **Two-Leg Slippage (10 bps per leg)**: $100 \times (0.42 + 0.48) \times 0.0010 = \$0.042 + \$0.048 = \mathbf{\$0.090}$
+  6. **Expected Net Profit (after fees & slippage)**: $\$6.00 - \$1.71 - \$0.9984 - \$0.090 = \mathbf{\$3.2016}$ ($\$0.032016/\text{contract}$)
 
-3. **Polymarket Taker Fee**:
-   - Baseline political/rate markets: $0\text{ bps} \implies \text{Fee}_{\text{poly}} = \$0.0000$.
-
-4. **Estimated Slippage Buffer (10 bps)**:
-   $$\text{Slippage} = 80 \times \$0.5200 \times 0.0010 = \$0.0416$$
-
-5. **Net Spread**:
-   $$\text{Total Net Profit} = \$4.8000 - \$1.3700 - \$0.0000 - \$0.0416 = +\$3.3884$$
-   $$\text{Per-Contract Net Spread} = \$3.3884 / 80 = +\$0.042355\text{ }(+814.52\text{ bps})$$
-
-6. **Short-Selling Inventory Requirement**:
-   - Selling 80 Kalshi contracts requires either:
-     a) Holding 80 Kalshi YES contracts in account inventory, OR
-     b) Buying 80 Kalshi NO contracts at ask, OR
-     c) Posting 100% collateral to mint Kalshi pairs.
-   - Naked shorting is prohibited.
+#### Short-Selling Inventory Requirement
+- Selling contracts on either venue requires either holding pre-existing YES contracts in inventory, buying the complementary NO contracts, or posting 100% cash collateral ($1.00/contract) to mint complete sets before selling. Naked shorting is prohibited.
 
 ---
 
-### 3.2 Complementary Payoff Parity Strategy (Synthetic Long Both)
+### 3.2 Complementary Payoff Parity Strategy (Inverse Mapping: Long Both & Short Both)
 
 #### Structural Definition
-When two contracts have inverse outcome equivalence ($Poly_{\text{YES}} \equiv Kalshi_{\text{NO}}$), purchasing both contracts creates a **cross-venue complementary synthetic position**, taking advantage of payoff parity ($P_1 + P_2 < 1.00$).
+When two contracts have inverse outcome equivalence ($Poly_{\text{YES}} \equiv Kalshi_{\text{NO}}$), holding complementary positions across both venues creates a **cross-venue synthetic payoff parity strategy**.
 
 > [!WARNING]
 > **Not CTF Minting**: Holding Poly YES and Kalshi YES across two separate legal entities is NOT on-chain CTF minting. CTF minting refers specifically to depositing USDC into the Gnosis CTF smart contract on Polygon to receive token pairs on Polymarket.
 
-#### Numerical Example (300 contracts)
-- Binary Event: *"Xi Jinping out before 2027?"*
-- Polymarket YES Ask: $\$0.4600$, Available Qty: $500$
-- Kalshi YES Ask: $\$0.4800$, Available Qty: $300$, Series: `POL-XI` (multiplier $0.07$)
+#### Inverse Reference Scenario A: Long Both (`mint_both_long`, 100 contracts)
+- **Polymarket Politics YES Ask**: $\$0.4500$ ($\text{feeRate} = 0.04$)
+- **Kalshi FED YES Ask**: $\$0.4800$ (Series `FED-27DEC`, multiplier $0.07$)
+1. **Total Combined Acquisition Cost**: $100 \times (\$0.45 + \$0.48) = \$93.00$; **Gross Spread**: $100 \times (1.00 - 0.93) = \mathbf{\$7.00}$
+2. **Polymarket Leg Fee**: $\text{round}(100 \times 0.04 \times 0.45 \times 0.55, 5) = \mathbf{\$0.99}$
+3. **Kalshi Leg Fee**: $\lceil 100 \times 0.07 \times 0.48 \times 0.52 \times 100 \rceil / 100 = \lceil 174.72 \rceil / 100 = \mathbf{\$1.75}$
+4. **Two-Leg Slippage (10 bps/leg)**: $100 \times (0.45 + 0.48) \times 0.0010 = \mathbf{\$0.093}$
+5. **Expected Net Profit**: $\$7.00 - \$0.99 - \$1.75 - \$0.093 = \mathbf{\$4.167}$
 
-1. **Total Combined Acquisition Cost**:
-   $$\text{Cost} = 300 \times (\$0.4600 + \$0.4800) = 300 \times \$0.9400 = \$282.00$$
-2. **Gross Spread**:
-   $$\text{Gross Profit} = 300 \times (1.0000 - 0.9400) = 300 \times \$0.0600 = \$18.00$$
-3. **Kalshi CFTC Taker Fee**:
-   $$\text{raw\_cents} = 0.07 \times 300 \times 0.48 \times 0.52 \times 100 = 524.16\text{ cents} \implies \lceil 524.16 \rceil = 525\text{ cents} = \$5.2500$$
-   Cap check: $300 \times \$0.02 = \$6.00$. Fee = $\$5.2500$.
-4. **Estimated Slippage Buffer (10 bps)**:
-   $$\text{Slippage} = \$282.00 \times 0.0010 = \$0.2820$$
-5. **Net Profit**:
-   $$\text{Net Profit} = \$18.00 - \$5.2500 - \$0.2820 = +\$12.4680\text{ }(+442.13\text{ bps})$$
+#### Inverse Reference Scenario B: Short Both (`merge_both_short`, 100 contracts)
+- **Polymarket Economics YES Bid**: $\$0.5400$ ($\text{feeRate} = 0.05$)
+- **Kalshi FED YES Bid**: $\$0.5200$ (Series `FED-27DEC`, multiplier $0.07$)
+1. **Upfront Proceeds**: $100 \times (\$0.54 + \$0.52) = \$106.00$; **Gross Spread**: $100 \times (1.06 - 1.00) = \mathbf{\$6.00}$
+2. **Polymarket Leg Fee**: $\text{round}(100 \times 0.05 \times 0.54 \times 0.46, 5) = \mathbf{\$1.242}$
+3. **Kalshi Leg Fee**: $\lceil 100 \times 0.07 \times 0.52 \times 0.48 \times 100 \rceil / 100 = \lceil 174.72 \rceil / 100 = \mathbf{\$1.75}$
+4. **Two-Leg Slippage (10 bps/leg)**: $100 \times (0.54 + 0.52) \times 0.0010 = \mathbf{\$0.106}$
+5. **Expected Net Profit**: $\$6.00 - \$1.242 - \$1.75 - \$0.106 = \mathbf{\$2.902}$
 
 #### Real-World Execution & Settlement Risks
 No claim of "riskless" or "guaranteed" profit can be made:
-1. **Legging Risk**: If the Polymarket leg fills at $\$0.46$ but the Kalshi ask moves to $\$0.55$ before the second order executes, the net spread turns negative ($-\$0.01$).
-2. **Partial Fill Risk**: If Polymarket fills 300 contracts but Kalshi fills only 50 contracts, the trader is left with an unhedged directional long position of 250 contracts on Polymarket.
-3. **Oracle & Regulatory Divergence**: Polymarket settles via decentralized UMA dispute consensus; Kalshi settles under CFTC regulatory rulings. In disputed geopolitical events, one venue may declare YES while the other voids the market or declares NO.
-4. **Capital Lockup**: $\$282.00$ remains locked across two venues earning zero yield until contract settlement.
+1. **Legging Risk**: If the Polymarket leg fills first and the Kalshi quote moves adversely before the second order executes, the net spread can turn negative.
+2. **Partial Fill Risk**: If one venue fills completely and the other fills partially, the trader is left with unhedged directional exposure.
+3. **Oracle & Regulatory Divergence**: Polymarket settles via decentralized UMA dispute consensus; Kalshi settles under CFTC regulatory rulings. In disputed events, one venue may resolve differently from the other.
+4. **Capital Lockup**: Full capital remains locked across two venues earning zero yield until contract settlement.
 
 ---
 
@@ -236,37 +232,37 @@ Recorded in [`docs/verification/phase6-live-audit.json`](file:///d:/PROJECTS/Pol
 - **Kalshi Live Connection**: Honestly reported as `unconfigured`. Live authenticated streaming requires registered RSA keypairs (`KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`). Unauthenticated requests result in connection reset. Under the Zero Fabrication Guarantee, no simulated Kalshi live session is claimed.
 
 ### 5.2 Class 2: Deterministic Test Fixtures
-All 26 tests in `tests/test_cross_venue.py` use controlled orderbook fixtures to verify mathematical boundary conditions (crossed books, stale timestamps, fee thresholds).
+All 27 tests in `tests/test_cross_venue.py` use controlled orderbook fixtures to verify mathematical boundary conditions (crossed books, stale timestamps, fee thresholds, and unknown-fee gating).
 
 ### 5.3 Class 3: Synthetic Memory Benchmarks
-The 10,000 events evaluated in `scripts/benchmark_cross_venue.py` are **synthetic in-memory test fixtures** designed to measure algorithm throughput without network latency. **Zero live exchange orders were executed.**
+The events evaluated in `scripts/benchmark_cross_venue.py` are **synthetic in-memory test fixtures** designed to measure algorithm throughput without network latency. **Zero live exchange orders were executed.**
 
 ---
 
 ## 6. Query Performance & ClickHouse Benchmark Ground Truth
 
-### 6.1 Latency Optimization Ground Truth
-Following the resolution of the client-side connection bottleneck, historical cross-venue analytics were benchmarked against a **populated dataset of 5,000 spread observations and 2,500 arbitrage opportunities** across 4 representative pairs, reading actual rows and bytes from disk:
+### 6.1 Latency Optimization Ground Truth (100 Measured Iterations After Warm-up)
+Following the resolution of the client-side connection bottleneck, historical cross-venue analytics were benchmarked across **100 measured iterations after 5 warm-up iterations per query** against a **populated dataset of 5,000 spread observations and 2,500 arbitrage opportunities** across 4 representative pairs, reading actual rows and bytes from disk:
 
 ```powershell
 python scripts/benchmark_cross_venue.py
 ```
 
-### 6.2 Empirical Results Table (Populated Dataset)
+### 6.2 Empirical Results Table (Populated Dataset, 100 Measured Iterations After 5 Warm-up)
 
 | Analytical Query Function | Target Table / View | Rows Read | Bytes Read | ClickHouse Server p50 / p95 | Client RTT p50 / p95 | Rows Returned |
 |---|---|---|---|---|---|---|
-| **`top_spread_pairs`** | `spread_observations FINAL` | **5,000** | 577,592 B | **14.1 ms** / 346.5 ms | **27.1 ms** / 360.8 ms | 4 pairs |
-| **`opportunity_frequency`** | `spread_observations FINAL` | **5,000** | 415,055 B | **16.5 ms** / 74.7 ms | **30.9 ms** / 91.3 ms | 4 rows |
-| **`duration_stats`** | `arbitrage_opportunities FINAL` | **2,500** | 291,520 B | **10.9 ms** / 13.0 ms | **22.7 ms** / 28.1 ms | 1 summary |
-| **`venue_comparison`** | `arbitrage_opportunities FINAL` | **2,500** | 329,338 B | **12.6 ms** / 65.3 ms | **25.8 ms** / 76.8 ms | 2 venue pairs |
-| **`quote_freshness`** | `spread_observations FINAL` | **5,000** | 100,000 B | **9.3 ms** / 99.7 ms | **25.0 ms** / 116.1 ms | 1 summary |
+| **`top_spread_pairs`** | `spread_observations FINAL` | **5,000** | 577,592 B | **14.7 ms** / 29.8 ms | **27.4 ms** / 43.4 ms | 4 pairs |
+| **`opportunity_frequency`** | `spread_observations FINAL` | **5,000** | 415,055 B | **13.0 ms** / 22.5 ms | **25.8 ms** / 38.1 ms | 4 rows |
+| **`duration_stats`** | `arbitrage_opportunities FINAL` | **2,500** | 90,000 B | **6.5 ms** / 8.4 ms | **18.4 ms** / 23.6 ms | 1 summary |
+| **`venue_comparison`** | `arbitrage_opportunities FINAL` | **2,500** | 127,606 B | **7.8 ms** / 11.1 ms | **19.4 ms** / 25.3 ms | 2 venue pairs |
+| **`quote_freshness`** | `spread_observations FINAL` | **5,000** | 100,000 B | **6.8 ms** / 9.1 ms | **18.5 ms** / 24.0 ms | 1 summary |
 
 ### 6.3 In-Memory Algorithmic Microbenchmarks
-- **Book Normalization (Millionth Ticks)**: **81,324.05 ops/sec** ($12.30\text{ }\mu\text{s/op}$)
-- **Depth Ladder VWAP Kernel (5 levels)**: **331,460.47 ops/sec** ($3.02\text{ }\mu\text{s/op}$)
-- **Versioned Fee Schedule Engine (`v2026.2`)**: **50,538.38 ops/sec** ($19.79\text{ }\mu\text{s/op}$)
-- **Full 8-State Scanner Evaluation**: **15,462.81 pairs/sec** ($64.67\text{ }\mu\text{s/pair}$)
+- **Book Normalization (Millionth Ticks)**: **71,070.79 ops/sec** ($14.070\text{ }\mu\text{s/op}$)
+- **Depth Ladder VWAP Kernel (5 levels)**: **296,430.06 ops/sec** ($3.373\text{ }\mu\text{s/op}$)
+- **Versioned Fee Schedule Engine (`v2026.2`)**: **45,206.64 ops/sec** ($22.121\text{ }\mu\text{s/op}$)
+- **Full 8-State Scanner Evaluation**: **12,675.76 pairs/sec** ($78.891\text{ }\mu\text{s/pair}$)
 
 ---
 
@@ -287,11 +283,11 @@ python scripts/benchmark_cross_venue.py
 ================================================================================
 1. Contract Registry Revalidated     : 2 Active, 3 Expired, 1 Rejected (Zero Title-Only)
 2. Real Polymarket uint256 IDs       : Verified & Documented (No Placeholders)
-3. Fee Engine CFTC Compliance        : Series Multipliers & Ceil-Cent Rounding Enforced
+3. Fee Engine CFTC & Poly Compliance : Poly C*feeRate*P*(1-P) & Kalshi Ceil-Cent Enforced
 4. Arbitrage Terminology Corrected   : Payoff Parity vs CTF Minting Distinct; No "Riskless"
 5. Live Venue Connectivity Verified  : Polymarket Live Captured; Kalshi Unconfigured Honest
 6. Benchmark Data Source Separated   : Synthetic Memory Fixtures (0 Live Events in Benchmark)
-7. ClickHouse Query Latency Fixed    : Persistent Pool -> p50=21-31ms (Populated with 5,000 rows)
+7. ClickHouse Query Latency Fixed    : 100 Iters After Warmup -> Server p50=6.5-14.7ms, RTT p50=18.4-27.4ms
 8. Automated Test Pass Rate          : 103 Passed, 1 Skipped (100% Pass Rate)
 9. C++20 Microstructure Engine       : All Assertions Passed
 10. React 19 Frontend Production     : 1,578 Modules Built, 0 Errors

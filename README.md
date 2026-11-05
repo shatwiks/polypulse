@@ -276,18 +276,21 @@ sequenceDiagram
 - **Implementation Details**: See [docs/benchmarking.md](file:///d:/PROJECTS/Polypulse/docs/benchmarking.md).
 
 ### 5. Cross-Venue Intelligence & Arbitrage Scanner
-- **What it does**: Computes real-time cross-venue bid-ask spreads, executable depth, and riskless arbitrage opportunities across operator-verified contract pairs.
+- **What it does**: Computes real-time cross-venue bid-ask spreads, executable depth, and cost-adjusted cross-venue opportunities across operator-verified contract pairs.
 - **Why it exists**: Fragmented binary liquidity across Polymarket and Kalshi creates recurring mispricings, but naive title matching leads to severe basis risk and phantom arbitrage.
 - **Phase 6 Implementation Highlights**:
   - **Seven-Dimension Contract Registry**: Stores Polymarket asset/token ID, Kalshi ticker, canonical event and outcome, equivalence mapping, resolution criteria and source, expiration and settlement details, verification status, reviewer identity, and review timestamp.
-  - **Zero Title-Only Matching Invariant**: Strictly rejects automated string similarity matching; require explicit comparison of authoritative settlement conditions.
+  - **Zero Title-Only Matching Invariant**: Strictly rejects automated string similarity matching; requires explicit comparison of authoritative settlement conditions.
   - **Dual Equivalence Topologies**:
     - **Direct Mapping** ($Poly_{\text{YES}} \equiv Kalshi_{\text{YES}}$): Long Poly / Short Kalshi ($P^{\text{kalshi}}_{\text{bid}} - P^{\text{poly}}_{\text{ask}}$) and Long Kalshi / Short Poly ($P^{\text{poly}}_{\text{bid}} - P^{\text{kalshi}}_{\text{ask}}$).
-    - **Inverse Mapping** ($Poly_{\text{YES}} \equiv Kalshi_{\text{NO}}$): Negative-risk Mint Arbitrage ($1.00 - [P^{\text{poly}}_{\text{ask}} + P^{\text{kalshi}}_{\text{ask}}]$) and Merge Arbitrage ($[P^{\text{poly}}_{\text{bid}} + P^{\text{kalshi}}_{\text{bid}}] - 1.00$).
-  - **Executable Depth & Fee Haircuts**: Evaluates top-of-book capacity ($\min(Q_1, Q_2)$), notional limits, and net spreads after Kalshi and Polymarket taker fee schedules.
-  - **Strict Scanner Gating**: Only pairs with `verification_status == 'verified'` enter the executable scanner; unverified, rejected, expired, or crossed-book pairs are strictly excluded.
+    - **Inverse Mapping** ($Poly_{\text{YES}} \equiv Kalshi_{\text{NO}}$): Synthetic complementary payoff parity Long Both ($1.00 - [P^{\text{poly}}_{\text{ask}} + P^{\text{kalshi}}_{\text{ask}}]$) and Short Both ($[P^{\text{poly}}_{\text{bid}} + P^{\text{kalshi}}_{\text{bid}}] - 1.00$).
+  - **Official Fee Models & Two-Leg Slippage**:
+    - **Polymarket Official Taker Fee Formula**: $\text{fee} = \text{round}(C \times \text{feeRate} \times P \times (1 - P), 5)$ using token-specific CLOB/Gamma API fee configs (`feeSchedule.rate`, `base_fee`) or official category coefficients (Finance `0.04`, Politics `0.04`, Economics `0.05`, Geopolitics `0.00`). Missing or invalid fee configs are classified as `fee_status = "unknown"` and never claim a positive executable net spread.
+    - **Kalshi Official CFTC Schedule (`v2026.2`)**: Applies series multipliers (`0.07` standard, `0.035` index) with order-level `ceil_whole_cents` rounding.
+    - **Two-Leg Slippage Buffer**: Applies configurable slippage independently across both execution legs.
+  - **Strict Scanner Gating**: Only pairs with `verification_status == 'verified'` enter the executable scanner; unverified, rejected, expired, unknown-fee, or crossed-book pairs are strictly excluded from executable status.
   - **Operator Authentication**: Preserves header-based (`X-Operator-Key`) and Bearer token authentication on all mutating endpoints (`PUT /contracts`, `POST /verify`, `DELETE`).
-- **Implementation & Specifications**: [backend/scanner.py](backend/scanner.py), [backend/state.py](backend/state.py), and [docs/phase6.md](docs/phase6.md).
+- **Implementation & Specifications**: [backend/scanner.py](backend/scanner.py), [backend/fees.py](backend/fees.py), [backend/state.py](backend/state.py), [docs/phase6.md](docs/phase6.md), and [docs/phase6_results.md](docs/phase6_results.md).
 
 ### 6. Wallet Markout Scoring & Microstructure Audit
 - **What it does**: Evaluates adverse selection on executed trades by comparing execution price to subsequent market midpoints across 5s, 30s, and 60s observation horizons.

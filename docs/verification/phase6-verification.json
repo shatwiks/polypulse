@@ -30,9 +30,12 @@
         "kalshi_cftc_fee_schedule_v2026_1",
         "kalshi_cftc_fee_schedule_v2026_2_series_multipliers",
         "kalshi_cftc_ceil_cent_rounding",
-        "polymarket_dynamic_taker_fees",
-        "polymarket_category_fee_schedules",
+        "polymarket_official_variance_fee_formula",
+        "polymarket_token_api_fee_config_normalization",
+        "polymarket_category_fee_coefficients",
+        "polymarket_unknown_fee_gating",
         "bidirectional_execution_recalculation",
+        "inverse_two_leg_fee_application",
         "dual_leg_slippage_model",
         "expired_contract_revalidation_against_current_time",
         "opportunity_state_machine_8_states",
@@ -45,7 +48,33 @@
         "candidate_vs_executable_distinction",
         "outbox_batch_durability",
         "notification_cooldown_suppression"
-      ]
+      ],
+      "reference_fee_scenarios": {
+        "example_1_finance_direct": {
+          "quantity": 100,
+          "poly_category": "finance",
+          "poly_fee_rate_coefficient": 0.04,
+          "poly_price": 0.40,
+          "kalshi_price": 0.46,
+          "polymarket_fee": 0.96,
+          "kalshi_fee": 1.74,
+          "gross_spread": 6.00,
+          "two_leg_slippage": 0.086,
+          "expected_net": 3.214
+        },
+        "example_2_politics_direct": {
+          "quantity": 100,
+          "poly_category": "politics",
+          "poly_fee_rate_coefficient": 0.04,
+          "kalshi_price": 0.42,
+          "poly_price": 0.48,
+          "polymarket_fee": 0.9984,
+          "kalshi_fee": 1.71,
+          "gross_spread": 6.00,
+          "two_leg_slippage": 0.09,
+          "expected_net": 3.2016
+        }
+      }
     },
     "cpp_engine_suite": {
       "command": "python scripts/build_engine.py --test",
@@ -63,33 +92,35 @@
     "hardware": "AMD Ryzen (AMD64 Family 25 Model 68) / Windows 11 / NVMe SSD",
     "book_normalization": {
       "iterations": 100000,
-      "throughput_ops_sec": 81324.05,
-      "latency_us_per_op": 12.296
+      "throughput_ops_sec": 71070.79,
+      "latency_us_per_op": 14.070
     },
     "ladder_vwap_5_levels": {
       "iterations": 100000,
-      "throughput_ops_sec": 331460.47,
-      "latency_us_per_op": 3.017
+      "throughput_ops_sec": 296430.06,
+      "latency_us_per_op": 3.373
     },
     "fee_engine_evaluation": {
       "iterations": 100000,
-      "throughput_ops_sec": 50538.38,
-      "latency_us_per_op": 19.787
+      "throughput_ops_sec": 45206.64,
+      "latency_us_per_op": 22.121
     },
     "scanner_pair_evaluation": {
       "iterations": 50000,
-      "throughput_pairs_sec": 15462.81,
-      "latency_us_per_pair": 64.671,
+      "throughput_pairs_sec": 12675.76,
+      "latency_us_per_pair": 78.891,
       "note": "Evaluated over synthetic memory test fixtures for algorithmic throughput; 0 live exchange orders executed"
     },
     "clickhouse_historical_queries": {
       "client_mode": "Persistent httpx.AsyncClient pool (127.0.0.1)",
+      "measured_iterations_per_query": 100,
+      "warmup_iterations_per_query": 5,
       "dataset_status": "Populated benchmark dataset (5,000 spread observations, 2,500 arbitrage opportunities across 4 pairs)",
-      "top_spread_pairs": { "rows_read": 5000, "bytes_read": 577592, "server_p50_ms": 14.1, "server_p95_ms": 346.5, "client_rtt_p50_ms": 27.1, "client_rtt_p95_ms": 360.8 },
-      "opportunity_frequency": { "rows_read": 5000, "bytes_read": 415055, "server_p50_ms": 16.5, "server_p95_ms": 74.7, "client_rtt_p50_ms": 30.9, "client_rtt_p95_ms": 91.3 },
-      "duration_stats": { "rows_read": 2500, "bytes_read": 291520, "server_p50_ms": 10.9, "server_p95_ms": 13.0, "client_rtt_p50_ms": 22.7, "client_rtt_p95_ms": 28.1 },
-      "venue_comparison": { "rows_read": 2500, "bytes_read": 329338, "server_p50_ms": 12.6, "server_p95_ms": 65.3, "client_rtt_p50_ms": 25.8, "client_rtt_p95_ms": 76.8 },
-      "quote_freshness": { "rows_read": 5000, "bytes_read": 100000, "server_p50_ms": 9.3, "server_p95_ms": 99.7, "client_rtt_p50_ms": 25.0, "client_rtt_p95_ms": 116.1 }
+      "top_spread_pairs": { "rows_read": 5000, "bytes_read": 577592, "server_p50_ms": 14.7, "server_p95_ms": 29.8, "client_rtt_p50_ms": 27.4, "client_rtt_p95_ms": 43.4 },
+      "opportunity_frequency": { "rows_read": 5000, "bytes_read": 415055, "server_p50_ms": 13.0, "server_p95_ms": 22.5, "client_rtt_p50_ms": 25.8, "client_rtt_p95_ms": 38.1 },
+      "duration_stats": { "rows_read": 2500, "bytes_read": 90000, "server_p50_ms": 6.5, "server_p95_ms": 8.4, "client_rtt_p50_ms": 18.4, "client_rtt_p95_ms": 23.6 },
+      "venue_comparison": { "rows_read": 2500, "bytes_read": 127606, "server_p50_ms": 7.8, "server_p95_ms": 11.1, "client_rtt_p50_ms": 19.4, "client_rtt_p95_ms": 25.3 },
+      "quote_freshness": { "rows_read": 5000, "bytes_read": 100000, "server_p50_ms": 6.8, "server_p95_ms": 9.1, "client_rtt_p50_ms": 18.5, "client_rtt_p95_ms": 24.0 }
     }
   },
   "contract_matching_audit": {

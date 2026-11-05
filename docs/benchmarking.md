@@ -149,27 +149,27 @@ All microbenchmarks were measured with `scripts/benchmark_cross_venue.py` execut
 
 | Microbenchmark Task | Iterations / Sample | Throughput | Mean Latency | Execution Model |
 | :--- | :--- | :--- | :--- | :--- |
-| **Canonical Quote Normalization** | 100,000 iterations | **81,324.05 ops/sec** | 12.30 us/op | Millionth-tick integer scaling & synthetic quote synthesis |
-| **Depth Ladder VWAP Kernel (5 Levels)** | 100,000 iterations | **331,460.47 ops/sec** | **3.02 us/op** | Vectorized multi-tier orderbook depth traversal |
-| **Versioned Fee Schedule Engine (`v2026.2`)** | 100,000 iterations | **50,538.38 ops/sec** | 19.79 us/op | Dynamic Polymarket category fee + Kalshi CFTC multiplier + ceil-cent rounding + dual-leg slippage |
-| **Full Scanner Evaluation (8 States)** | 50,000 pairs | **15,462.81 pairs/sec** | 64.67 us/pair | Full pair gating, freshness, VWAP, bidirectional fees, and state classification |
+| **Canonical Quote Normalization** | 100,000 iterations | **71,070.79 ops/sec** | 14.070 us/op | Millionth-tick integer scaling & synthetic quote synthesis |
+| **Depth Ladder VWAP Kernel (5 Levels)** | 100,000 iterations | **296,430.06 ops/sec** | **3.373 us/op** | Vectorized multi-tier orderbook depth traversal |
+| **Versioned Fee Schedule Engine (`v2026.2`)** | 100,000 iterations | **45,206.64 ops/sec** | 22.121 us/op | Official Polymarket `C*feeRate*P*(1-P)` + Kalshi CFTC multiplier + ceil-cent rounding + dual-leg slippage |
+| **Full Scanner Evaluation (8 States)** | 50,000 pairs | **12,675.76 pairs/sec** | 78.891 us/pair | Full pair gating, freshness, VWAP, bidirectional fees, and state classification |
 
 > [!NOTE]
 > **Benchmarking Scope Transparency**: Microbenchmarks 1–4 evaluate synthetic in-memory test fixtures to measure raw algorithmic execution capacity without network I/O. PolyPulse Phase 6 is purely an intelligence and analytics engine; zero live exchange orders are executed.
 
-### 6.2 ClickHouse Historical Cross-Venue Analytics Latency (Populated Dataset)
+### 6.2 ClickHouse Historical Cross-Venue Analytics Latency (100 Measured Iterations After 5 Warm-up)
 
 To avoid using empty-table response times as proof of analytical performance, historical cross-venue queries were benchmarked against a populated dataset (**5,000 spread observations** and **2,500 arbitrage opportunities** across 4 representative market pairs spanning 24 hours).
 
-Measurements were taken across 10 repeated executions per query pattern using `execute_query_with_telemetry` to record both server execution times from `X-ClickHouse-Summary` and end-to-end client RTT:
+Measurements were taken across **100 measured iterations after 5 warm-up iterations per query pattern** using `execute_query_with_telemetry` to record both server execution times from `X-ClickHouse-Summary` and end-to-end client RTT:
 
 | Historical Query Function | Target Table / View | Rows Read | Bytes Read | ClickHouse Server p50 / p95 | Client RTT p50 / p95 | Rows Returned |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **`top_spread_pairs`** | `spread_observations FINAL` | **5,000** | 577,592 B | **14.1 ms** / 346.5 ms | **27.1 ms** / 360.8 ms | 4 pairs |
-| **`opportunity_frequency`** | `spread_observations FINAL` | **5,000** | 415,055 B | **16.5 ms** / 74.7 ms | **30.9 ms** / 91.3 ms | 4 rows |
-| **`duration_stats`** | `arbitrage_opportunities FINAL` | **2,500** | 291,520 B | **10.9 ms** / 13.0 ms | **22.7 ms** / 28.1 ms | 1 summary |
-| **`venue_comparison`** | `arbitrage_opportunities FINAL` | **2,500** | 329,338 B | **12.6 ms** / 65.3 ms | **25.8 ms** / 76.8 ms | 2 venue pairs |
-| **`quote_freshness`** | `spread_observations FINAL` | **5,000** | 100,000 B | **9.3 ms** / 99.7 ms | **25.0 ms** / 116.1 ms | 1 summary |
+| **`top_spread_pairs`** | `spread_observations FINAL` | **5,000** | 577,592 B | **14.7 ms** / 29.8 ms | **27.4 ms** / 43.4 ms | 4 pairs |
+| **`opportunity_frequency`** | `spread_observations FINAL` | **5,000** | 415,055 B | **13.0 ms** / 22.5 ms | **25.8 ms** / 38.1 ms | 4 rows |
+| **`duration_stats`** | `arbitrage_opportunities FINAL` | **2,500** | 90,000 B | **6.5 ms** / 8.4 ms | **18.4 ms** / 23.6 ms | 1 summary |
+| **`venue_comparison`** | `arbitrage_opportunities FINAL` | **2,500** | 127,606 B | **7.8 ms** / 11.1 ms | **19.4 ms** / 25.3 ms | 2 venue pairs |
+| **`quote_freshness`** | `spread_observations FINAL` | **5,000** | 100,000 B | **6.8 ms** / 9.1 ms | **18.5 ms** / 24.0 ms | 1 summary |
 
 ### 6.3 Root-Cause Analysis: Resolution of ~1-Second Query Latencies
 Early Phase 6 benchmark drafts observed query latencies of approximately 1,035–1,136 ms. A database correctness audit revealed two client-side networking bottlenecks rather than database engine limits:

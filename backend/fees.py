@@ -1,14 +1,26 @@
 """
 PolyPulse Phase 6: Versioned Fee & Execution Cost Engine.
 Provides official fee schedules, series-specific multipliers, regulatory rounding rules,
-dynamic Polymarket category fee rates, and multi-leg net spread calculations for
-Polymarket and Kalshi binary prediction markets.
+official Polymarket non-linear taker fee formulas (C * feeRate * P * (1 - P)),
+token-specific API fee configuration normalization, and multi-leg net spread calculations
+for Polymarket and Kalshi binary prediction markets.
 """
+import logging
 import math
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
+import httpx
+
+LOG = logging.getLogger(__name__)
 
 DEFAULT_FEE_VERSION = "v2026.1"
+
+# Official Polymarket API endpoints for token-specific market fee inspection
+POLYMARKET_GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
+POLYMARKET_CLOB_FEE_RATE_URL = "https://clob.polymarket.com/fee-rate"
+
+# In-memory cache of resolved token-specific Polymarket fee configurations
+_TOKEN_FEE_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # Series multipliers for Kalshi CFTC-regulated binary option markets
 KALSHI_SERIES_MULTIPLIERS = {
@@ -25,13 +37,129 @@ KALSHI_SERIES_MULTIPLIERS = {
     "DEFAULT": 0.07
 }
 
-# Category defaults for Polymarket dynamic market-specific fee schedules
-POLYMARKET_CATEGORY_FEES = {
-    "finance": {"fees_enabled": True, "taker_bps": 20.0, "description": "Finance / Rate / Derivative markets"},
-    "economics": {"fees_enabled": True, "taker_bps": 15.0, "description": "Macroeconomic Indicator markets"},
-    "politics": {"fees_enabled": True, "taker_bps": 10.0, "description": "Elections / Political nomination markets"},
-    "geopolitics": {"fees_enabled": False, "taker_bps": 0.0, "description": "Geopolitical events (fee-free)"},
-    "default": {"fees_enabled": False, "taker_bps": 0.0, "description": "Standard binary CLOB baseline (fee-free)"}
+# Official Polymarket Taker Fee Formula:
+#   fee = round(C * feeRate * P * (1 - P), 5)
+# where feeRate is a dimensionless formula coefficient (NOT a flat percentage of contract notional).
+# Official Category Coefficients (per Polymarket Fee Schedule):
+#   - Finance     : 0.04  (finance_prices_fees)
+#   - Politics    : 0.04  (politics_fees)
+#   - Economics   : 0.05  (economics_fees)
+#   - Geopolitics : 0.00  (fee-free)
+#   - Crypto      : 0.07  (crypto_fees_v2)
+#   - Sports      : 0.03  (sports_fees_v2)
+#   - Tech        : 0.04  (tech_fees)
+#   - Culture     : 0.05  (culture_fees)
+#   - Weather     : 0.05  (weather_fees)
+#   - General     : 0.05  (general_fees)
+POLYMARKET_CATEGORY_FEES: Dict[str, Dict[str, Any]] = {
+    "finance": {
+        "fees_enabled": True,
+        "fee_rate": 0.04,
+        "taker_bps": 400.0,
+        "fee_type": "finance_prices_fees",
+        "description": "Finance / Rate / Price markets (feeRate = 0.04)"
+    },
+    "politics": {
+        "fees_enabled": True,
+        "fee_rate": 0.04,
+        "taker_bps": 400.0,
+        "fee_type": "politics_fees",
+        "description": "Elections / Political nomination markets (feeRate = 0.04)"
+    },
+    "economics": {
+        "fees_enabled": True,
+        "fee_rate": 0.05,
+        "taker_bps": 500.0,
+        "fee_type": "economics_fees",
+        "description": "Macroeconomic Indicator markets (feeRate = 0.05)"
+    },
+    "geopolitics": {
+        "fees_enabled": False,
+        "fee_rate": 0.00,
+        "taker_bps": 0.0,
+        "fee_type": None,
+        "description": "Geopolitical events (fee-free, feeRate = 0.00)"
+    },
+    "crypto": {
+        "fees_enabled": True,
+        "fee_rate": 0.07,
+        "taker_bps": 700.0,
+        "fee_type": "crypto_fees_v2",
+        "description": "Crypto markets (feeRate = 0.07)"
+    },
+    "sports": {
+        "fees_enabled": True,
+        "fee_rate": 0.03,
+        "taker_bps": 300.0,
+        "fee_type": "sports_fees_v2",
+        "description": "Sports markets (feeRate = 0.03)"
+    },
+    "tech": {
+        "fees_enabled": True,
+        "fee_rate": 0.04,
+        "taker_bps": 400.0,
+        "fee_type": "tech_fees",
+        "description": "Technology markets (feeRate = 0.04)"
+    },
+    "culture": {
+        "fees_enabled": True,
+        "fee_rate": 0.05,
+        "taker_bps": 500.0,
+        "fee_type": "culture_fees",
+        "description": "Culture / Entertainment markets (feeRate = 0.05)"
+    },
+    "weather": {
+        "fees_enabled": True,
+        "fee_rate": 0.05,
+        "taker_bps": 500.0,
+        "fee_type": "weather_fees",
+        "description": "Weather / Climate markets (feeRate = 0.05)"
+    },
+    "general": {
+        "fees_enabled": True,
+        "fee_rate": 0.05,
+        "taker_bps": 500.0,
+        "fee_type": "general_fees",
+        "description": "General markets (feeRate = 0.05)"
+    },
+    "other": {
+        "fees_enabled": True,
+        "fee_rate": 0.05,
+        "taker_bps": 500.0,
+        "fee_type": "general_fees",
+        "description": "Other standard fee-enabled markets (feeRate = 0.05)"
+    },
+    "fee_free": {
+        "fees_enabled": False,
+        "fee_rate": 0.00,
+        "taker_bps": 0.0,
+        "fee_type": None,
+        "description": "Explicitly fee-disabled market (feeRate = 0.00)"
+    },
+    "none": {
+        "fees_enabled": False,
+        "fee_rate": 0.00,
+        "taker_bps": 0.0,
+        "fee_type": None,
+        "description": "Explicitly fee-disabled market (feeRate = 0.00)"
+    }
+}
+
+# Mapping from Polymarket API `feeType` identifier to canonical category key
+POLYMARKET_FEE_TYPE_MAP: Dict[str, str] = {
+    "finance_prices_fees": "finance",
+    "finance_fees": "finance",
+    "politics_fees": "politics",
+    "economics_fees": "economics",
+    "geopolitics_fees": "geopolitics",
+    "crypto_fees_v2": "crypto",
+    "crypto_fees": "crypto",
+    "sports_fees_v2": "sports",
+    "sports_fees": "sports",
+    "tech_fees": "tech",
+    "culture_fees": "culture",
+    "weather_fees": "weather",
+    "general_fees": "general",
 }
 
 
@@ -42,6 +170,8 @@ class FeeScheduleVersion:
     source: str
     polymarket_maker_bps: float
     polymarket_taker_bps: float
+    polymarket_taker_formula: str
+    polymarket_rounding_decimals: int
     polymarket_settlement_fee_pct: float
     kalshi_maker_bps: float
     kalshi_taker_formula: str
@@ -56,32 +186,36 @@ FEE_SCHEDULES: Dict[str, FeeScheduleVersion] = {
     "v2026.1": FeeScheduleVersion(
         version="v2026.1",
         effective_date="2026-01-01T00:00:00Z",
-        source="Kalshi CFTC Rulebook Chapter 3 / Polymarket CTF Exchange V2 Architecture",
+        source="Kalshi CFTC Rulebook Chapter 3 / Polymarket Official Taker Fee Schedule",
         polymarket_maker_bps=0.0,
         polymarket_taker_bps=0.0,
-        polymarket_settlement_fee_pct=2.0,
+        polymarket_taker_formula="round(C * feeRate * P * (1 - P), 5)",
+        polymarket_rounding_decimals=5,
+        polymarket_settlement_fee_pct=0.0,
         kalshi_maker_bps=0.0,
         kalshi_taker_formula="min(0.07 * P * (1 - P), 0.02)",
         kalshi_max_taker_fee=0.02,
         kalshi_min_fee=0.0001,
         kalshi_rounding_rule="unrounded",
         default_slippage_bps=10.0,
-        notes="Legacy preliminary schedule without contract-level cent rounding."
+        notes="Legacy Kalshi unrounded schedule with Polymarket non-linear C * feeRate * P * (1 - P) formula."
     ),
     "v2026.2": FeeScheduleVersion(
         version="v2026.2",
         effective_date="2026-11-01T00:00:00Z",
-        source="Kalshi Official CFTC Fee Schedule (Appendix B) / Polymarket Dynamic Category Fee Model",
+        source="Kalshi Official CFTC Fee Schedule (Appendix B) / Polymarket Official Category Fee Schedule",
         polymarket_maker_bps=0.0,
-        polymarket_taker_bps=0.0,  # Baseline default; dynamic market metadata overrides this
-        polymarket_settlement_fee_pct=2.0,  # 2% on net redemption profits
+        polymarket_taker_bps=0.0,
+        polymarket_taker_formula="round(C * feeRate * P * (1 - P), 5)",
+        polymarket_rounding_decimals=5,
+        polymarket_settlement_fee_pct=0.0,
         kalshi_maker_bps=0.0,
         kalshi_taker_formula="ceil(multiplier * contracts * P * (1 - P) * 100) / 100",
         kalshi_max_taker_fee=0.02,  # $0.02 max fee per contract
         kalshi_min_fee=0.01,        # $0.01 minimum fee per executed order
         kalshi_rounding_rule="ceil_whole_cents",  # CFTC official order-level cent ceiling
         default_slippage_bps=10.0,
-        notes="Official CFTC series multipliers, contract-quantity integer cent rounding, and dynamic Polymarket market-specific fee schedules."
+        notes="Official Kalshi CFTC series multipliers & integer cent ceiling + Polymarket C * feeRate * P * (1 - P) rounded to 5 decimal places."
     )
 }
 
@@ -100,33 +234,411 @@ def get_kalshi_series_multiplier(ticker: Optional[str]) -> float:
     return KALSHI_SERIES_MULTIPLIERS["DEFAULT"]
 
 
+def normalize_polymarket_fee_rate(raw_value: Any, unit: str = "auto") -> Optional[float]:
+    """
+    Normalizes a Polymarket fee rate parameter into the dimensionless formula coefficient
+    `feeRate` in [0.0, 1.0] used in `fee = C * feeRate * P * (1 - P)`.
+
+    Unit Conversion Rules:
+    1. `unit="coefficient"` (or `"decimal"`):
+       - Used by Polymarket Gamma `feeSchedule.rate` and `POLYMARKET_CATEGORY_FEES["fee_rate"]`
+         (e.g., Finance = 0.04, Politics = 0.04, Economics = 0.05, Geopolitics = 0.00).
+       - Valid range: 0.0 <= raw_value <= 1.0.
+    2. `unit="bps"` (or `"basis_points"`):
+       - Used by Polymarket CLOB `/fee-rate?token_id=<id>` (`base_fee`, `taker_base_fee`, `fee_rate_bps`).
+       - Converted to dimensionless coefficient via:
+           feeRate = raw_value_bps / 10_000.0
+         (e.g., 400 bps -> 0.04, 500 bps -> 0.05, 0 bps -> 0.00).
+       - Valid range: 0.0 <= raw_value <= 10_000.0.
+    3. `unit="auto"`:
+       - Values in [0.0, 1.0] are treated as dimensionless coefficients.
+       - Values in (1.0, 10_000.0] are treated as basis points and divided by 10,000.0.
+
+    Returns None if `raw_value` is None, non-numeric, NaN, infinite, negative, or out of bounds.
+    """
+    if raw_value is None or isinstance(raw_value, bool):
+        return None
+    try:
+        val = float(raw_value)
+    except (ValueError, TypeError):
+        return None
+
+    if math.isnan(val) or math.isinf(val) or val < 0.0:
+        return None
+
+    u = (unit or "auto").strip().lower()
+    if u in ("coefficient", "decimal", "rate"):
+        if val > 1.0:
+            return None
+        return round(val, 8)
+    elif u in ("bps", "basis_points"):
+        if val > 10_000.0:
+            return None
+        return round(val / 10_000.0, 8)
+    else:
+        # Auto detection with explicit range validation
+        if val <= 1.0:
+            return round(val, 8)
+        elif val <= 10_000.0:
+            return round(val / 10_000.0, 8)
+        return None
+
+
+def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
+    """
+    Normalizes a raw Polymarket CLOB or Gamma API token/market fee configuration object.
+
+    Supported API payload structures:
+    1. Gamma Market Payload (`/markets?clob_token_ids=<token_id>`):
+       `{"feesEnabled": True, "feeType": "finance_prices_fees", "feeSchedule": {"rate": 0.04, "exponent": 1}}`
+       or `{"feesEnabled": False, "feeType": None, "feeSchedule": None}`
+    2. CLOB Fee-Rate Payload (`/fee-rate?token_id=<token_id>`):
+       `{"base_fee": 400}` or `{"fee_rate_bps": 400}` (normalized via `base_fee / 10_000.0 -> 0.04`)
+    3. Normalized / Direct Token Config:
+       `{"fees_enabled": True, "fee_rate": 0.04}`
+
+    If the payload is missing, malformed, or contains invalid values, returns `fee_status="unknown"`.
+    """
+    if not isinstance(api_payload, dict) or not api_payload:
+        return {
+            "fee_status": "unknown",
+            "fees_enabled": None,
+            "fee_rate": None,
+            "taker_bps": None,
+            "category": "unknown",
+            "unit_conversion": "none",
+            "source": "invalid_or_empty_api_payload"
+        }
+
+    # Check explicit feesEnabled / fees_enabled boolean
+    fees_enabled_raw = api_payload.get("feesEnabled")
+    if fees_enabled_raw is None:
+        fees_enabled_raw = api_payload.get("fees_enabled")
+
+    if fees_enabled_raw is not None and not isinstance(fees_enabled_raw, bool):
+        return {
+            "fee_status": "unknown",
+            "fees_enabled": None,
+            "fee_rate": None,
+            "taker_bps": None,
+            "category": "unknown",
+            "unit_conversion": "none",
+            "source": "invalid_fees_enabled_flag"
+        }
+
+    # If explicitly fee-disabled on the market
+    if fees_enabled_raw is False:
+        return {
+            "fee_status": "known",
+            "fees_enabled": False,
+            "fee_rate": 0.0,
+            "taker_bps": 0.0,
+            "category": str(api_payload.get("category") or api_payload.get("feeType") or "fee_free").lower(),
+            "unit_conversion": "fee_disabled_zero",
+            "source": "polymarket_api_token_config"
+        }
+
+    # 1. Check nested `feeSchedule` / `fee_schedule` from Gamma / Market API
+    fee_schedule = api_payload.get("feeSchedule") or api_payload.get("fee_schedule")
+    if isinstance(fee_schedule, dict) and "rate" in fee_schedule:
+        rate = normalize_polymarket_fee_rate(fee_schedule.get("rate"), unit="coefficient")
+        if rate is None:
+            return {
+                "fee_status": "unknown",
+                "fees_enabled": None,
+                "fee_rate": None,
+                "taker_bps": None,
+                "category": "unknown",
+                "unit_conversion": "invalid_schedule_rate",
+                "source": "invalid_api_fee_schedule"
+            }
+        enabled = bool(rate > 0.0) if fees_enabled_raw is None else bool(fees_enabled_raw and rate > 0.0)
+        active_rate = rate if enabled else 0.0
+        fee_type = str(api_payload.get("feeType") or api_payload.get("fee_type") or "token_schedule").lower()
+        cat = POLYMARKET_FEE_TYPE_MAP.get(fee_type, fee_type)
+        return {
+            "fee_status": "known",
+            "fees_enabled": enabled,
+            "fee_rate": active_rate,
+            "taker_bps": round(active_rate * 10_000.0, 4),
+            "category": cat,
+            "unit_conversion": "coefficient_direct",
+            "source": "polymarket_api_fee_schedule"
+        }
+
+    # 2. Check direct `fee_rate` or `rate` field on payload
+    if "fee_rate" in api_payload or "rate" in api_payload:
+        raw_r = api_payload.get("fee_rate") if "fee_rate" in api_payload else api_payload.get("rate")
+        unit_hint = str(api_payload.get("unit") or "coefficient")
+        rate = normalize_polymarket_fee_rate(raw_r, unit=unit_hint)
+        if rate is None:
+            return {
+                "fee_status": "unknown",
+                "fees_enabled": None,
+                "fee_rate": None,
+                "taker_bps": None,
+                "category": "unknown",
+                "unit_conversion": "invalid_direct_rate",
+                "source": "invalid_api_fee_rate"
+            }
+        enabled = bool(rate > 0.0) if fees_enabled_raw is None else bool(fees_enabled_raw and rate > 0.0)
+        active_rate = rate if enabled else 0.0
+        return {
+            "fee_status": "known",
+            "fees_enabled": enabled,
+            "fee_rate": active_rate,
+            "taker_bps": round(active_rate * 10_000.0, 4),
+            "category": str(api_payload.get("category") or "token_config").lower(),
+            "unit_conversion": f"normalized_from_{unit_hint}",
+            "source": "polymarket_api_token_config"
+        }
+
+    # 3. Check `feeType` / `fee_type` from Gamma API
+    fee_type_raw = api_payload.get("feeType") or api_payload.get("fee_type")
+    if isinstance(fee_type_raw, str) and fee_type_raw.strip():
+        ft_key = fee_type_raw.strip().lower()
+        mapped_cat = POLYMARKET_FEE_TYPE_MAP.get(ft_key, ft_key)
+        if mapped_cat in POLYMARKET_CATEGORY_FEES:
+            cat_info = POLYMARKET_CATEGORY_FEES[mapped_cat]
+            enabled = cat_info["fees_enabled"] if fees_enabled_raw is None else bool(fees_enabled_raw)
+            active_rate = float(cat_info["fee_rate"]) if enabled else 0.0
+            return {
+                "fee_status": "known",
+                "fees_enabled": enabled,
+                "fee_rate": active_rate,
+                "taker_bps": round(active_rate * 10_000.0, 4),
+                "category": mapped_cat,
+                "unit_conversion": "fee_type_schedule_lookup",
+                "source": "polymarket_api_fee_type"
+            }
+
+    # 4. Check CLOB basis-point fields (`fee_rate_bps`, `taker_bps`, `base_fee`, `taker_base_fee`)
+    for bps_key in ("fee_rate_bps", "taker_bps", "base_fee", "taker_base_fee", "takerBaseFee"):
+        if bps_key in api_payload and api_payload[bps_key] is not None:
+            rate = normalize_polymarket_fee_rate(api_payload[bps_key], unit="bps")
+            if rate is None:
+                return {
+                    "fee_status": "unknown",
+                    "fees_enabled": None,
+                    "fee_rate": None,
+                    "taker_bps": None,
+                    "category": "unknown",
+                    "unit_conversion": f"invalid_{bps_key}_bps",
+                    "source": "invalid_api_bps"
+                }
+            enabled = bool(rate > 0.0) if fees_enabled_raw is None else bool(fees_enabled_raw and rate > 0.0)
+            active_rate = rate if enabled else 0.0
+            return {
+                "fee_status": "known",
+                "fees_enabled": enabled,
+                "fee_rate": active_rate,
+                "taker_bps": round(active_rate * 10_000.0, 4),
+                "category": str(api_payload.get("category") or "clob_token_bps").lower(),
+                "unit_conversion": "bps_div_10000",
+                "source": f"polymarket_clob_{bps_key}"
+            }
+
+    return {
+        "fee_status": "unknown",
+        "fees_enabled": None,
+        "fee_rate": None,
+        "taker_bps": None,
+        "category": "unknown",
+        "unit_conversion": "none",
+        "source": "missing_api_fee_fields"
+    }
+
+
+def fetch_polymarket_token_fee_config(
+    token_id: str,
+    client: Optional[httpx.Client] = None,
+    timeout: float = 5.0,
+    use_cache: bool = True
+) -> Dict[str, Any]:
+    """
+    Fetches the actual token-specific market fee configuration from the official
+    Polymarket Gamma / CLOB APIs and normalizes the fee rate units.
+    Caches resolved configurations by token_id.
+    """
+    if not token_id or not str(token_id).strip():
+        return normalize_polymarket_api_fee_config({})
+
+    tid = str(token_id).strip()
+    if use_cache and tid in _TOKEN_FEE_CACHE:
+        return _TOKEN_FEE_CACHE[tid]
+
+    owns_client = client is None
+    http_client = client or httpx.Client(timeout=timeout)
+    try:
+        # 1. Query Gamma Markets API by clob_token_ids for authoritative `feesEnabled` and `feeSchedule.rate`
+        resp_gamma = http_client.get(POLYMARKET_GAMMA_MARKETS_URL, params={"clob_token_ids": tid})
+        if resp_gamma.status_code == 200:
+            data = resp_gamma.json()
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                norm = normalize_polymarket_api_fee_config(data[0])
+                if norm["fee_status"] == "known":
+                    _TOKEN_FEE_CACHE[tid] = norm
+                    return norm
+
+        # 2. Fallback to CLOB `/fee-rate?token_id=<id>` endpoint
+        resp_clob = http_client.get(POLYMARKET_CLOB_FEE_RATE_URL, params={"token_id": tid})
+        if resp_clob.status_code == 200:
+            clob_data = resp_clob.json()
+            if isinstance(clob_data, dict):
+                norm = normalize_polymarket_api_fee_config(clob_data)
+                if norm["fee_status"] == "known":
+                    _TOKEN_FEE_CACHE[tid] = norm
+                    return norm
+    except Exception as exc:
+        LOG.debug("Failed to fetch Polymarket fee config for token %s: %s", tid, exc)
+    finally:
+        if owns_client:
+            http_client.close()
+
+    return {
+        "fee_status": "unknown",
+        "fees_enabled": None,
+        "fee_rate": None,
+        "taker_bps": None,
+        "category": "unknown",
+        "unit_conversion": "none",
+        "source": "api_unreachable_or_unconfigured"
+    }
+
+
 def get_polymarket_market_fee_rate(
     market_category: Optional[str] = None,
     fees_enabled: Optional[bool] = None,
     custom_taker_bps: Optional[float] = None,
+    poly_fee_rate: Optional[float] = None,
+    token_fee_config: Optional[Dict[str, Any]] = None,
     version: str = DEFAULT_FEE_VERSION
 ) -> Dict[str, Any]:
     """
-    Determines active Polymarket taker fee rate and whether fees are enabled.
-    Supports explicit overrides, market metadata, and category defaults.
+    Determines the active Polymarket taker fee coefficient (`fee_rate`) and whether fees are enabled.
+
+    Resolution Precedence:
+    1. Actual token-specific market fee configuration (`token_fee_config`) from the Polymarket API.
+    2. Explicit token-level `poly_fee_rate` (dimensionless coefficient) or `custom_taker_bps` (normalized via bps / 10,000).
+    3. Explicit `fees_enabled=False` (fee-disabled market -> feeRate = 0.0, fee_status = "known").
+    4. Official category schedule fallback (`market_category` in `POLYMARKET_CATEGORY_FEES`).
+    5. If fee configuration is missing or invalid, classifies `fee_status = "unknown"` and `fee_rate = None`.
     """
-    if custom_taker_bps is not None:
-        enabled = fees_enabled if fees_enabled is not None else (custom_taker_bps > 0)
+    # 1. Prefer token-specific market fee config from Polymarket API when provided
+    if token_fee_config is not None:
+        return normalize_polymarket_api_fee_config(token_fee_config)
+
+    # Validate fees_enabled if provided
+    if fees_enabled is not None and not isinstance(fees_enabled, bool):
         return {
-            "fees_enabled": enabled,
-            "taker_bps": float(custom_taker_bps) if enabled else 0.0,
-            "category": "custom"
+            "fee_status": "unknown",
+            "fees_enabled": None,
+            "fee_rate": None,
+            "taker_bps": None,
+            "category": "unknown",
+            "unit_conversion": "none",
+            "source": "invalid_fees_enabled"
         }
 
-    cat_key = (market_category or "default").lower()
-    cat_info = POLYMARKET_CATEGORY_FEES.get(cat_key, POLYMARKET_CATEGORY_FEES["default"])
+    # 2a. Explicit dimensionless coefficient `poly_fee_rate`
+    if poly_fee_rate is not None:
+        norm_rate = normalize_polymarket_fee_rate(poly_fee_rate, unit="coefficient")
+        if norm_rate is None:
+            return {
+                "fee_status": "unknown",
+                "fees_enabled": None,
+                "fee_rate": None,
+                "taker_bps": None,
+                "category": "unknown",
+                "unit_conversion": "invalid_coefficient",
+                "source": "invalid_poly_fee_rate"
+            }
+        enabled = fees_enabled if fees_enabled is not None else (norm_rate > 0.0)
+        active_rate = norm_rate if enabled else 0.0
+        return {
+            "fee_status": "known",
+            "fees_enabled": enabled,
+            "fee_rate": active_rate,
+            "taker_bps": round(active_rate * 10_000.0, 4),
+            "category": (market_category or "custom").lower(),
+            "unit_conversion": "coefficient_direct",
+            "source": "explicit_fee_rate"
+        }
 
-    enabled = fees_enabled if fees_enabled is not None else cat_info["fees_enabled"]
-    bps = cat_info["taker_bps"] if enabled else 0.0
+    # 2b. Explicit basis-points override `custom_taker_bps` (normalized via bps / 10,000)
+    if custom_taker_bps is not None:
+        norm_rate = normalize_polymarket_fee_rate(custom_taker_bps, unit="bps")
+        if norm_rate is None:
+            return {
+                "fee_status": "unknown",
+                "fees_enabled": None,
+                "fee_rate": None,
+                "taker_bps": None,
+                "category": "unknown",
+                "unit_conversion": "invalid_bps",
+                "source": "invalid_custom_taker_bps"
+            }
+        enabled = fees_enabled if fees_enabled is not None else (norm_rate > 0.0)
+        active_rate = norm_rate if enabled else 0.0
+        return {
+            "fee_status": "known",
+            "fees_enabled": enabled,
+            "fee_rate": active_rate,
+            "taker_bps": round(active_rate * 10_000.0, 4),
+            "category": (market_category or "custom").lower(),
+            "unit_conversion": "bps_div_10000",
+            "source": "explicit_taker_bps"
+        }
+
+    # 3. Explicit fee-disabled market (`fees_enabled=False`)
+    if fees_enabled is False:
+        return {
+            "fee_status": "known",
+            "fees_enabled": False,
+            "fee_rate": 0.0,
+            "taker_bps": 0.0,
+            "category": (market_category or "fee_free").strip().lower(),
+            "unit_conversion": "fee_disabled_zero",
+            "source": "explicit_fee_disabled"
+        }
+
+    # 4. Category fallback from `POLYMARKET_CATEGORY_FEES`
+    if market_category is not None and isinstance(market_category, str) and market_category.strip():
+        raw_cat = market_category.strip().lower()
+        cat_key = POLYMARKET_FEE_TYPE_MAP.get(raw_cat, raw_cat)
+        if cat_key in POLYMARKET_CATEGORY_FEES:
+            cat_info = POLYMARKET_CATEGORY_FEES[cat_key]
+            enabled = fees_enabled if fees_enabled is not None else cat_info["fees_enabled"]
+            active_rate = float(cat_info["fee_rate"]) if enabled else 0.0
+            return {
+                "fee_status": "known",
+                "fees_enabled": enabled,
+                "fee_rate": active_rate,
+                "taker_bps": round(active_rate * 10_000.0, 4),
+                "category": cat_key,
+                "unit_conversion": "category_coefficient",
+                "source": "category_schedule"
+            }
+        # Unrecognized category -> unknown fee configuration
+        return {
+            "fee_status": "unknown",
+            "fees_enabled": None,
+            "fee_rate": None,
+            "taker_bps": None,
+            "category": raw_cat,
+            "unit_conversion": "none",
+            "source": "unrecognized_category"
+        }
+
+    # 5. Missing fee configuration (neither token config, rate, fees_enabled=False, nor category provided)
     return {
-        "fees_enabled": enabled,
-        "taker_bps": float(bps),
-        "category": cat_key
+        "fee_status": "unknown",
+        "fees_enabled": None,
+        "fee_rate": None,
+        "taker_bps": None,
+        "category": "unknown",
+        "unit_conversion": "none",
+        "source": "missing_fee_configuration"
     }
 
 
@@ -137,45 +649,79 @@ def calculate_venue_taker_fee(
     version: str = DEFAULT_FEE_VERSION,
     kalshi_ticker: Optional[str] = None,
     poly_taker_bps: Optional[float] = None,
+    poly_fee_rate: Optional[float] = None,
     poly_fees_enabled: Optional[bool] = None,
-    poly_category: Optional[str] = None
+    poly_category: Optional[str] = None,
+    poly_token_fee_config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Calculates exact known taker fee for an order.
-    Supports official CFTC cent-rounding rules and series multipliers for Kalshi,
-    and market-specific dynamic taker fee rates across Finance, Politics, Economics, and Geopolitics for Polymarket.
+    Calculates exact known taker fee for an order leg.
+    - Kalshi: Official CFTC cent-rounding rules (`ceil_whole_cents`) and series multipliers.
+    - Polymarket: Official non-linear formula `fee = round(C * feeRate * P * (1 - P), 5)`.
+      If the Polymarket fee configuration is missing or invalid, returns `fee_status="unknown"`
+      and `total_fee=None`.
     """
     sched = get_fee_schedule(version)
     if price <= 0.0 or price >= 1.0 or quantity <= 0.0:
-        return {"per_unit_fee": 0.0, "total_fee": 0.0, "version": sched.version}
+        return {
+            "per_unit_fee": 0.0,
+            "total_fee": 0.0,
+            "fee_status": "known",
+            "version": sched.version
+        }
 
     if venue == "polymarket":
         poly_rate_info = get_polymarket_market_fee_rate(
             market_category=poly_category,
             fees_enabled=poly_fees_enabled,
             custom_taker_bps=poly_taker_bps,
+            poly_fee_rate=poly_fee_rate,
+            token_fee_config=poly_token_fee_config,
             version=version
         )
-        if not poly_rate_info["fees_enabled"]:
+        if poly_rate_info.get("fee_status") == "unknown":
             return {
-                "per_unit_fee": 0.0,
-                "total_fee": 0.0,
-                "taker_bps": 0.0,
-                "fees_enabled": False,
-                "category": poly_rate_info.get("category", "default"),
+                "per_unit_fee": None,
+                "total_fee": None,
+                "fee_rate": None,
+                "taker_bps": None,
+                "fees_enabled": None,
+                "fee_status": "unknown",
+                "category": poly_rate_info.get("category", "unknown"),
+                "source": poly_rate_info.get("source", "missing_fee_configuration"),
                 "version": sched.version
             }
 
-        active_taker_bps = poly_rate_info["taker_bps"]
-        per_unit = (active_taker_bps / 10_000.0) * price
-        total = round(per_unit * quantity, 4)
+        if not poly_rate_info["fees_enabled"] or poly_rate_info["fee_rate"] == 0.0:
+            return {
+                "per_unit_fee": 0.0,
+                "total_fee": 0.0,
+                "fee_rate": 0.0,
+                "taker_bps": 0.0,
+                "fees_enabled": False,
+                "fee_status": "known",
+                "category": poly_rate_info.get("category", "fee_free"),
+                "source": poly_rate_info.get("source", "fee_disabled"),
+                "rounding": "round_5_decimals",
+                "version": sched.version
+            }
+
+        # Official Polymarket Taker Fee Formula:
+        #   fee = round(C * feeRate * P * (1 - P), 5)
+        active_fee_rate = float(poly_rate_info["fee_rate"])
+        raw_total = quantity * active_fee_rate * price * (1.0 - price)
+        total = round(raw_total, 5)
         per_unit_rounded = round(total / quantity, 6) if quantity > 0 else 0.0
         return {
             "per_unit_fee": per_unit_rounded,
             "total_fee": total,
-            "taker_bps": active_taker_bps,
+            "fee_rate": active_fee_rate,
+            "taker_bps": poly_rate_info["taker_bps"],
             "fees_enabled": True,
-            "category": poly_rate_info.get("category", "default"),
+            "fee_status": "known",
+            "category": poly_rate_info.get("category", "custom"),
+            "source": poly_rate_info.get("source", "schedule"),
+            "rounding": "round_5_decimals",
             "version": sched.version
         }
 
@@ -196,6 +742,7 @@ def calculate_venue_taker_fee(
                 "per_unit_fee": per_unit,
                 "total_fee": total,
                 "multiplier": multiplier,
+                "fee_status": "known",
                 "rounding": "ceil_whole_cents",
                 "version": sched.version
             }
@@ -208,11 +755,17 @@ def calculate_venue_taker_fee(
                 "per_unit_fee": per_unit,
                 "total_fee": total,
                 "multiplier": multiplier,
+                "fee_status": "known",
                 "rounding": "unrounded",
                 "version": sched.version
             }
 
-    return {"per_unit_fee": 0.0, "total_fee": 0.0, "version": sched.version}
+    return {
+        "per_unit_fee": None,
+        "total_fee": None,
+        "fee_status": "unknown",
+        "version": sched.version
+    }
 
 
 def evaluate_net_opportunity_costs(
@@ -229,13 +782,16 @@ def evaluate_net_opportunity_costs(
     version: str = DEFAULT_FEE_VERSION,
     kalshi_ticker: Optional[str] = None,
     poly_taker_bps: Optional[float] = None,
+    poly_fee_rate: Optional[float] = None,
     poly_fees_enabled: Optional[bool] = None,
-    poly_category: Optional[str] = None
+    poly_category: Optional[str] = None,
+    poly_token_fee_config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Evaluates gross spread vs net spread after known trading fees and estimated execution slippage.
-    Accounts for both execution legs, series multipliers, official CFTC rounding rules,
-    and market-specific Polymarket fee rates.
+    Applies fees independently to both execution legs (`buy_venue` at `buy_price`, `sell_venue` at `sell_price`).
+    If either leg's fee configuration is missing or invalid, classifies `fee_status="unknown"`
+    and does not claim a positive executable net spread (`net_spread=None`, `is_executable=False`).
     """
     sched = get_fee_schedule(version)
     active_slippage = slippage_bps if slippage_bps is not None else sched.default_slippage_bps
@@ -257,51 +813,83 @@ def evaluate_net_opportunity_costs(
         gross_spread_per_unit = round(sell_price - buy_price, 6)
         entry_notional = buy_price
 
-    total_gross_profit = round(gross_spread_per_unit * quantity, 4)
+    total_gross_profit = round(gross_spread_per_unit * quantity, 5)
+    gross_spread_bps = round((gross_spread_per_unit / entry_notional) * 10_000.0, 2) if entry_notional > 0 else 0.0
 
-    # 2. Known Trading Fees for Both Execution Legs
+    # 2. Known Trading Fees Applied Independently to Both Execution Legs
     buy_fee_info = calculate_venue_taker_fee(
         buy_venue, buy_price, quantity, version,
         kalshi_ticker=kalshi_ticker,
         poly_taker_bps=poly_taker_bps,
+        poly_fee_rate=poly_fee_rate,
         poly_fees_enabled=poly_fees_enabled,
-        poly_category=poly_category
+        poly_category=poly_category,
+        poly_token_fee_config=poly_token_fee_config
     )
     sell_fee_info = calculate_venue_taker_fee(
         sell_venue, sell_price, quantity, version,
         kalshi_ticker=kalshi_ticker,
         poly_taker_bps=poly_taker_bps,
+        poly_fee_rate=poly_fee_rate,
         poly_fees_enabled=poly_fees_enabled,
-        poly_category=poly_category
+        poly_category=poly_category,
+        poly_token_fee_config=poly_token_fee_config
     )
 
-    total_known_fees = round(buy_fee_info["total_fee"] + sell_fee_info["total_fee"], 4)
-    fee_per_unit = round(total_known_fees / quantity, 6) if quantity > 0 else 0.0
-
-    # 3. Net Spread after Known Trading Fees (Deterministic)
-    net_spread_per_unit = round(gross_spread_per_unit - fee_per_unit, 6)
-    total_net_profit = round(total_gross_profit - total_known_fees, 4)
-
-    # 4. Estimated Execution Slippage Across BOTH Legs
-    # Slippage buffer applies per-leg to each leg's respective notional value:
-    # Leg 1 (Buy Leg): buy_price * quantity
-    # Leg 2 (Sell Leg): sell_price * quantity
+    # 3. Two-Leg Slippage Calculation (Independent of Fee Status)
     buy_leg_notional = buy_price * quantity
     sell_leg_notional = sell_price * quantity
-    total_execution_notional = round(buy_leg_notional + sell_leg_notional, 4)
+    total_execution_notional = round(buy_leg_notional + sell_leg_notional, 5)
 
-    buy_leg_slippage = round(buy_price * (active_slippage / 10_000.0) * quantity, 4)
-    sell_leg_slippage = round(sell_price * (active_slippage / 10_000.0) * quantity, 4)
-    total_slippage_cost = round(buy_leg_slippage + sell_leg_slippage, 4)
+    buy_leg_slippage = round(buy_price * (active_slippage / 10_000.0) * quantity, 5)
+    sell_leg_slippage = round(sell_price * (active_slippage / 10_000.0) * quantity, 5)
+    total_slippage_cost = round(buy_leg_slippage + sell_leg_slippage, 5)
     slippage_cost_per_unit = round(total_slippage_cost / quantity, 6) if quantity > 0 else 0.0
 
-    estimated_net_spread_per_unit = round(net_spread_per_unit - slippage_cost_per_unit, 6)
-    total_estimated_net_profit = round(total_net_profit - total_slippage_cost, 4)
+    # 4. Check for Missing or Invalid Fee Configuration on Either Leg
+    if buy_fee_info.get("fee_status") == "unknown" or sell_fee_info.get("fee_status") == "unknown":
+        return {
+            "fee_status": "unknown",
+            "is_executable": False,
+            "gross_spread": gross_spread_per_unit,
+            "gross_spread_bps": gross_spread_bps,
+            "total_gross_profit": total_gross_profit,
+            "buy_venue_fee": buy_fee_info.get("total_fee"),
+            "sell_venue_fee": sell_fee_info.get("total_fee"),
+            "total_known_fees": None,
+            "net_spread": None,
+            "net_spread_bps": None,
+            "total_net_profit": None,
+            "slippage_bps_per_leg": active_slippage,
+            "buy_leg_slippage": buy_leg_slippage,
+            "sell_leg_slippage": sell_leg_slippage,
+            "total_slippage_cost": total_slippage_cost,
+            "slippage_application": "per_leg_across_both_legs",
+            "total_execution_notional": total_execution_notional,
+            "estimated_net_spread": None,
+            "total_estimated_net_profit": None,
+            "fee_schedule_version": sched.version,
+            "fee_schedule_source": sched.source,
+            "rounding_rule": sched.kalshi_rounding_rule,
+            "is_payoff_parity_strategy": long_both or short_both,
+            "is_guaranteed_profit": False,
+            "risk_disclosure": "Fee configuration unknown or invalid; positive executable net spread cannot be claimed."
+        }
 
-    gross_spread_bps = round((gross_spread_per_unit / entry_notional) * 10_000.0, 2) if entry_notional > 0 else 0.0
+    # 5. Deterministic Net Spread & Estimated Net Profit (Both Legs Known)
+    total_known_fees = round(buy_fee_info["total_fee"] + sell_fee_info["total_fee"], 5)
+    fee_per_unit = round(total_known_fees / quantity, 6) if quantity > 0 else 0.0
+
+    net_spread_per_unit = round(gross_spread_per_unit - fee_per_unit, 6)
+    total_net_profit = round(total_gross_profit - total_known_fees, 5)
     net_spread_bps = round((net_spread_per_unit / entry_notional) * 10_000.0, 2) if entry_notional > 0 else 0.0
 
+    estimated_net_spread_per_unit = round(net_spread_per_unit - slippage_cost_per_unit, 6)
+    total_estimated_net_profit = round(total_net_profit - total_slippage_cost, 5)
+
     return {
+        "fee_status": "known",
+        "is_executable": bool(estimated_net_spread_per_unit > 0.0 and gross_spread_per_unit > 0.0),
         "gross_spread": gross_spread_per_unit,
         "gross_spread_bps": gross_spread_bps,
         "total_gross_profit": total_gross_profit,
