@@ -10,8 +10,11 @@ services:
       KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID:-}
       KALSHI_PRIVATE_KEY_PATH: ${KALSHI_PRIVATE_KEY_PATH:-}
       MARKET_PAIRS_JSON: ${MARKET_PAIRS_JSON:-[]}
-      CLICKHOUSE_URL: http://clickhouse:8123
-      POLYPULSE_DB: /data/polypulse.db
+      CLICKHOUSE_URL: http://polypulse:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD}@clickhouse:8123
+      POLYPULSE_DB: /data/polypulse-${POLYPULSE_MODE:-demo}.db
+      POLYGON_RPC_URL: ${POLYGON_RPC_URL:-}
+      POLYGON_CONFIRMATIONS: ${POLYGON_CONFIRMATIONS:-12}
+      POLYGON_START_BLOCK: ${POLYGON_START_BLOCK:-}
     volumes:
       - journal_data:/data
     depends_on:
@@ -29,8 +32,11 @@ services:
       - "5173:80"
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
+    environment:
+      CLICKHOUSE_USER: polypulse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD}
     ports:
-      - "8123:8123"
+      - "127.0.0.1:8123:8123"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro

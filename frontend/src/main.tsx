@@ -3,13 +3,23 @@ import { createRoot } from 'react-dom/client'
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, BookOpen, ChevronDown, CircleHelp, Command, Database, Gauge, LayoutDashboard, ListFilter, Radio, Search, ShieldCheck, Wallet, X } from 'lucide-react'
 import './style.css'
 
-type Book = {venue:string;market_id:string;bids:number[][];asks:number[][];best_bid:number|null;best_ask:number|null;buy_vwap_10:number|null;imbalance:number;sequence:number}
-type Health = {mode:string;feeds:Record<string,string>;storage:{clickhouse:string};uptime_seconds:number;journal:{events:number;pending_export:number;snapshots:number};counters:{events:number;gaps:number;recoveries:number;duplicates:number}}
+type Book = {venue:string;market_id:string;bids:number[][];asks:number[][];best_bid:number|null;best_ask:number|null;buy_vwap_10:number|null;imbalance:number;sequence:number;valid?:boolean;stale?:boolean;recovery_status?:string;last_received_timestamp?:string|null}
+type Health = {mode:string;feeds:Record<string,string>;feed_details?:Record<string,{status:string;detail?:string|null;last_received_timestamp?:string|null}>;storage:{clickhouse:string;insert_latency_ms?:number};uptime_seconds:number;ingestion_lag_seconds?:number|null;rates?:{events_received_per_second:number;events_processed_per_second:number;orderbook_processing_latency_ms_p95?:number|null};journal:{events:number;pending_export:number;snapshots:number};counters:{events:number;gaps:number;recoveries:number;duplicates:number;reconnects?:number}}
 type Spread = {name:string;polymarket:Book;kalshi:Book;buy_polymarket_sell_kalshi:number|null;buy_kalshi_sell_polymarket:number|null;note:string}
-type Trade = {trade_id:string;wallet:string;venue:string;market_id:string;side:string;price:number;quantity:number;executed_at:number}
-type WalletRow = {wallet:string;trade_count:number}
-type Markout = {wallet:string;summary:{horizon_seconds:number;trade_count:number;available_count:number;average_markout:number|null;positive_percentage:number|null}[];entries:{trade_id:string;horizon_seconds:number;future_mid:number|null;markout:number|null;available:boolean}[]}
-type Page = 'overview'|'orderbook'|'scanner'|'wallets'|'trades'|'health'
+type ContractPair = {polymarket_asset_id:string;kalshi_ticker:string;event_description:string;outcome_equivalence:string;resolution_source:string;expiration:string;verification_status:'unverified'|'verified'|'rejected'}
+const emptyContract:ContractPair={polymarket_asset_id:'',kalshi_ticker:'',event_description:'',outcome_equivalence:'',resolution_source:'',expiration:'',verification_status:'unverified'}
+type Trade = {trade_id:string;wallet:string|null;venue:string;market_id:string;side:string;price:number;quantity:number|null;executed_at:number}
+type WalletRow = {wallet:string;trade_count:number;active_markets?:number;maker_count?:number;taker_count?:number}
+type Markout = {wallet:string;summary:{horizon_seconds:number;trade_count:number;available_count:number;average_markout:number|null;average_markout_bps?:number|null;positive_percentage:number|null;status_counts?:Record<string,number>}[];entries:{trade_id:string;horizon_seconds:number;future_mid:number|null;markout:number|null;markout_bps?:number|null;available:boolean;status?:string;side?:string;exec_price?:number}[]}
+type WalletProfile = {wallet_address:string;trade_count:number;market_count:number;venue_count:number;total_volume:number;total_notional:number;first_seen:string|null;last_seen:string|null;maker_count:number;taker_count:number}
+type WalletRanking = {wallet:string;trade_count:number;available_count:number;horizon_seconds:number;avg_markout:number|null;avg_markout_bps:number|null;positive_percentage:number|null;qualified:boolean;sample_status:string;maker_count?:number;taker_count?:number}
+type MarkoutDistribution = {horizon_seconds:number;total_count:number;available_count:number;quantiles:{p10:number|null;p25:number|null;median:number|null;p75:number|null;p90:number|null};min_bps:number|null;max_bps:number|null;avg_bps:number|null;win_rate:number|null}
+type WalletTradeEntry = {trade_id:string;event_id?:string;wallet_address:string;venue:string;market_id:string;attribution_type:string;side:string;price:string;quantity:string;notional:string;exchange_timestamp?:string;received_timestamp:string;source:string}
+type MarketSummary = {market_id:string;venue:string|null;window:string;trade_count:number;total_volume:number;buy_volume:number;sell_volume:number;dollar_volume:number;vwap:number|null;high_price:number|null;low_price:number|null;close_price:number|null;best_bid:number|null;best_ask:number|null;spread:number|null;spread_bps:number|null;bid_depth:number;ask_depth:number;snapshot_count:number}
+type Candle = {time:string;open:number;high:number;low:number;close:number;volume:number;buy_volume:number;sell_volume:number;trade_count:number;avg_price:number}
+type SpreadPoint = {time:string;avg_spread:number|null;min_spread:number|null;max_spread:number|null;avg_bid_depth:number|null;avg_ask_depth:number|null}
+type StorageStats = {status:string;active_table_count:number;total_compressed_bytes:number;total_uncompressed_bytes:number;compression_ratio:number;total_rows:number;tables:{table:string;rows:number;compressed_bytes:number;uncompressed_bytes:number;compression_ratio:number}[]}
+type Page = 'overview'|'orderbook'|'scanner'|'wallets'|'trades'|'analytics'|'health'
 
 const nav: {id:Page;label:string;icon:React.ComponentType<{size?:number}>;shortcut:string}[] = [
   {id:'overview',label:'Overview',icon:LayoutDashboard,shortcut:'1'},
@@ -17,24 +27,46 @@ const nav: {id:Page;label:string;icon:React.ComponentType<{size?:number}>;shortc
   {id:'scanner',label:'Cross-venue scanner',icon:BarChart3,shortcut:'3'},
   {id:'wallets',label:'Wallet intelligence',icon:Wallet,shortcut:'4'},
   {id:'trades',label:'Trade explorer',icon:ListFilter,shortcut:'5'},
-  {id:'health',label:'System health',icon:Gauge,shortcut:'6'}
+  {id:'analytics',label:'ClickHouse analytics',icon:Database,shortcut:'6'},
+  {id:'health',label:'System health',icon:Gauge,shortcut:'7'}
 ]
 const api = async <T,>(path:string):Promise<T> => {const r=await fetch(`/api/v1${path}`);if(!r.ok) throw new Error(`${r.status} ${r.statusText}`);return r.json()}
 const price = (n:number|null|undefined) => n==null?'—':n.toFixed(4)
 const signed = (n:number|null|undefined) => n==null?'—':`${n>=0?'+':''}${(n*100).toFixed(2)}¢`
+const signedBps = (n:number|null|undefined) => n==null?'—':`${n>=0?'+':''}${n.toFixed(1)} bps`
+const signedDollars = (n:number|null|undefined) => n==null?'—':`${n>=0?'+':''}$${Math.abs(n).toFixed(4)}`
 const short = (s:string) => s.length>25?`${s.slice(0,13)}…${s.slice(-7)}`:s
 const time = (n:number) => new Date(n*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})
-const venueName=(s:string)=>s==='polymarket'?'Polymarket':'Kalshi'
+const venueName=(s:string)=>s==='polymarket'?'Polymarket':s==='kalshi'?'Kalshi':'Polygon'
+const lastEvent=(value:string|null|undefined)=>value?new Date(value).toLocaleTimeString():'Never'
 
 function App(){
   const [page,setPage]=useState<Page>('overview')
   const [books,setBooks]=useState<Book[]>([])
   const [health,setHealth]=useState<Health|null>(null)
+  const [mode,setMode]=useState<'demo'|'live'|null>(null)
   const [spreads,setSpreads]=useState<Spread[]>([])
+  const [contracts,setContracts]=useState<ContractPair[]>([])
+  const [contractForm,setContractForm]=useState<ContractPair>(emptyContract)
+  const [contractError,setContractError]=useState('')
   const [trades,setTrades]=useState<Trade[]>([])
   const [wallets,setWallets]=useState<WalletRow[]>([])
   const [wallet,setWallet]=useState('')
+  const [walletProfile,setWalletProfile]=useState<WalletProfile|null>(null)
+  const [walletRankings,setWalletRankings]=useState<WalletRanking[]>([])
+  const [walletTrades,setWalletTrades]=useState<WalletTradeEntry[]>([])
+  const [markoutDist,setMarkoutDist]=useState<MarkoutDistribution|null>(null)
+  const [rankingHorizon,setRankingHorizon]=useState<5|30|60>(30)
+  const [minSampleFilter,setMinSampleFilter]=useState<number>(5)
+  const [walletSearch,setWalletSearch]=useState<string>('')
   const [markout,setMarkout]=useState<Markout|null>(null)
+  const [anWin,setAnWin]=useState<'1h'|'6h'|'24h'|'7d'>('24h')
+  const [anRes,setAnRes]=useState<'1m'|'5m'|'1h'|'1d'>('1m')
+  const [anSummary,setAnSummary]=useState<MarketSummary|null>(null)
+  const [anCandles,setAnCandles]=useState<Candle[]>([])
+  const [anSpread,setAnSpread]=useState<SpreadPoint[]>([])
+  const [storageStats,setStorageStats]=useState<StorageStats|null>(null)
+  const [anLoading,setAnLoading]=useState(false)
   const [selected,setSelected]=useState('')
   const [search,setSearch]=useState('')
   const [commandOpen,setCommandOpen]=useState(false)
@@ -42,16 +74,19 @@ function App(){
   const [error,setError]=useState('')
   const [clock,setClock]=useState(new Date())
   const active=books.find(b=>`${b.venue}:${b.market_id}`===selected)||books[0]
+  const bookStale=(b:Book)=>Boolean(b.stale||(b.last_received_timestamp&&clock.getTime()-new Date(b.last_received_timestamp).getTime()>=30000))
+  const bookReliable=(b:Book)=>b.valid!==false&&!bookStale(b)
   const filtered=books.filter(b=>`${b.venue} ${b.market_id}`.toLowerCase().includes(search.toLowerCase()))
   const sortedSpreads=[...spreads].sort((a,b)=>Math.max(b.buy_polymarket_sell_kalshi??-2,b.buy_kalshi_sell_polymarket??-2)-Math.max(a.buy_polymarket_sell_kalshi??-2,a.buy_kalshi_sell_polymarket??-2))
   const totalMarkets=books.length
-  const avgSpread=books.filter(b=>b.best_ask!=null&&b.best_bid!=null).reduce((a,b)=>a+(b.best_ask!-b.best_bid!),0)/(books.filter(b=>b.best_ask!=null&&b.best_bid!=null).length||1)
+  const validBooks=books.filter(b=>bookReliable(b)&&b.best_ask!=null&&b.best_bid!=null)
+  const avgSpread=validBooks.length?validBooks.reduce((a,b)=>a+(b.best_ask!-b.best_bid!),0)/validBooks.length:null
 
   useEffect(()=>{
     let alive=true;let ws:WebSocket|null=null;let retry:ReturnType<typeof setTimeout>;const worker=new Worker(new URL('./stream.worker.ts',import.meta.url),{type:'module'})
     worker.onmessage=(event:MessageEvent<{type:string;data:any}>)=>{
       const m=event.data
-      if(m.type==='initial'){setBooks(m.data.markets);setSelected(v=>v||((m.data.markets[0])?`${m.data.markets[0].venue}:${m.data.markets[0].market_id}`:''))}
+      if(m.type==='initial'){setMode(m.data.mode);setHealth(null);setBooks(m.data.markets);setSelected((m.data.markets[0])?`${m.data.markets[0].venue}:${m.data.markets[0].market_id}`:'');api<Health>('/health').then(setHealth).catch(()=>{})}
       if(m.type==='book')setBooks(prev=>{const key=(b:Book)=>`${b.venue}:${b.market_id}`;return [...prev.filter(b=>key(b)!==key(m.data)),m.data].sort((a,b)=>key(a).localeCompare(key(b)))})
       if(m.type==='health')setHealth(m.data)
     }
@@ -61,37 +96,344 @@ function App(){
     return()=>{alive=false;clearTimeout(retry);ws?.close();worker.terminate()}
   },[])
   useEffect(()=>{const id=setInterval(()=>setClock(new Date()),1000);return()=>clearInterval(id)},[])
-  useEffect(()=>{const load=()=>{api<Spread[]>('/spreads').then(setSpreads).catch(()=>{});api<Trade[]>('/trades').then(setTrades).catch(()=>{});api<WalletRow[]>('/wallets').then(setWallets).catch(()=>{});api<Health>('/health').then(setHealth).catch(()=>{})};load();const id=setInterval(load,5000);return()=>clearInterval(id)},[])
-  useEffect(()=>{if(wallet)api<Markout>(`/wallets/${encodeURIComponent(wallet)}/markouts`).then(setMarkout).catch(()=>setMarkout(null));else setMarkout(null)},[wallet,health?.journal.snapshots])
+  useEffect(()=>{const load=()=>{api<Spread[]>('/spreads').then(setSpreads).catch(()=>{});api<ContractPair[]>('/contracts').then(setContracts).catch(()=>{});api<Trade[]>('/trades').then(setTrades).catch(()=>{});api<WalletRow[]>('/wallets').then(setWallets).catch(()=>{});api<Health>('/health').then(setHealth).catch(()=>{})};load();const id=setInterval(load,5000);return()=>clearInterval(id)},[])
+  const saveContract=async(e:React.FormEvent)=>{e.preventDefault();setContractError('');try{const body={...contractForm,expiration:new Date(contractForm.expiration+'Z').toISOString()};const response=await fetch('/api/v1/contracts',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error(`Save failed (${response.status})`);setContracts(await api<ContractPair[]>('/contracts'));setContractForm(emptyContract);setSpreads(await api<Spread[]>('/spreads'))}catch(err){setContractError(String(err))}}
+  const deleteContract=async(pair:ContractPair)=>{setContractError('');try{const response=await fetch(`/api/v1/contracts/${encodeURIComponent(pair.polymarket_asset_id)}/${encodeURIComponent(pair.kalshi_ticker)}`,{method:'DELETE'});if(!response.ok)throw new Error(`Delete failed (${response.status})`);setContracts(await api<ContractPair[]>('/contracts'));setSpreads(await api<Spread[]>('/spreads'))}catch(err){setContractError(String(err))}}
+  useEffect(()=>{
+    if(page!=='wallets')return
+    api<WalletRanking[]>(`/analytics/wallet-rankings?horizon=${rankingHorizon}&min_trades=${minSampleFilter}`).then(setWalletRankings).catch(()=>setWalletRankings([]))
+    api<MarkoutDistribution>(`/analytics/markout-distribution?horizon=${rankingHorizon}`).then(setMarkoutDist).catch(()=>setMarkoutDist(null))
+  },[page,rankingHorizon,minSampleFilter,health?.journal.snapshots])
+  useEffect(()=>{
+    if(!wallet){setMarkout(null);setWalletProfile(null);setWalletTrades([]);return}
+    api<Markout>(`/wallets/${encodeURIComponent(wallet)}/markouts`).then(setMarkout).catch(()=>setMarkout(null))
+    api<WalletProfile>(`/wallets/${encodeURIComponent(wallet)}`).then(setWalletProfile).catch(()=>setWalletProfile(null))
+    api<WalletTradeEntry[]>(`/wallets/${encodeURIComponent(wallet)}/trades?limit=50`).then(setWalletTrades).catch(()=>setWalletTrades([]))
+  },[wallet,health?.journal.snapshots])
+  const activeMarketId=active?.market_id||(books[0]?.market_id??'')
+  useEffect(()=>{
+    if(page!=='analytics'||!activeMarketId)return
+    let alive=true;setAnLoading(true)
+    Promise.all([
+      api<MarketSummary>(`/analytics/market/${encodeURIComponent(activeMarketId)}/summary?window=${anWin}`).catch(()=>null),
+      api<Candle[]>(`/analytics/market/${encodeURIComponent(activeMarketId)}/candles?resolution=${anRes}`).catch(()=>[]),
+      api<SpreadPoint[]>(`/analytics/market/${encodeURIComponent(activeMarketId)}/spread?window=${anWin}`).catch(()=>[]),
+      api<StorageStats>('/analytics/storage').catch(()=>null)
+    ]).then(([s,c,sp,st])=>{
+      if(!alive)return
+      setAnSummary(s);setAnCandles(c||[]);setAnSpread(sp||[]);setStorageStats(st);setAnLoading(false)
+    })
+    return()=>{alive=false}
+  },[page,activeMarketId,anWin,anRes])
   useEffect(()=>{const key=(e:KeyboardEvent)=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();setCommandOpen(v=>!v)}else if(e.key==='Escape')setCommandOpen(false);else if(!e.ctrlKey&&!e.metaKey&&!/input|textarea/i.test((e.target as HTMLElement).tagName)){const item=nav.find(n=>n.shortcut===e.key);if(item)setPage(item.id)}};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key)},[])
   const title=nav.find(n=>n.id===page)?.label||'Overview'
-  const subtitle:Record<Page,string>={overview:'A live view across your prediction markets',orderbook:'Price levels, depth and liquidity in real time',scanner:'Compare verified equivalent outcomes across venues',wallets:'Post-trade performance across three horizons',trades:'Explore observed executions and trade records',health:'Feed continuity, storage and processing status'}
+  const subtitle:Record<Page,string>={overview:'A live view across your prediction markets',orderbook:'Price levels, depth and liquidity in real time',scanner:'Compare verified equivalent outcomes across venues',wallets:'Post-trade performance across three horizons',trades:'Explore observed executions and trade records',analytics:'Historical OHLCV, volume VWAP, and storage telemetry',health:'Feed continuity, storage and processing status'}
 
   return <div className="app">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><Activity size={20} strokeWidth={2.5}/></div><div><strong>POLYPULSE</strong><small>MARKET INTELLIGENCE</small></div></div>
       <div className="workspace-label">WORKSPACE <ChevronDown size={12}/></div>
       <nav>{nav.map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}><n.icon size={17}/><span>{n.label}</span><kbd>{n.shortcut}</kbd></button>)}</nav>
-      <div className="sidebar-bottom"><div className="sidebar-section">DATA SOURCES</div><div className="source-row"><span className={`status-dot ${health?.feeds.polymarket==='connected'||health?.feeds.polymarket==='demo'?'good':''}`}/><span>Polymarket</span><em>{health?.feeds.polymarket||'waiting'}</em></div><div className="source-row"><span className={`status-dot ${health?.feeds.kalshi==='connected'||health?.feeds.kalshi==='demo'?'good':''}`}/><span>Kalshi</span><em>{health?.feeds.kalshi||'waiting'}</em></div><div className="sidebar-help"><CircleHelp size={16}/> PolyPulse v0.1 <span>⌘ K</span></div></div>
+      <div className="sidebar-bottom"><div className="sidebar-section">DATA SOURCES</div>{['polymarket','kalshi','polygon'].filter(v=>v!=='polygon'||mode==='live').map(v=><div className="source-row" key={v} title={`Last event: ${lastEvent(health?.feed_details?.[v]?.last_received_timestamp)}`}><span className={`status-dot ${health?.feeds[v]==='connected'||health?.feeds[v]==='demo'?'good':''}`}/><span>{venueName(v)}</span><em>{health?.feeds[v]||'waiting'}</em></div>)}<div className="sidebar-help"><CircleHelp size={16}/> PolyPulse v0.2 <span>⌘ K</span></div></div>
     </aside>
     <main className="main">
-      <header className="topbar"><div className="crumb">WORKSPACE <span>/</span> <b>{title.toUpperCase()}</b></div><div className="top-actions"><button className="search-trigger" onClick={()=>setCommandOpen(true)}><Search size={15}/> Search markets or pages <kbd>⌘ K</kbd></button><span className="top-time">{clock.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',hour12:false})}</span><span className={`connection ${socket==='connected'?'online':''}`}><Radio size={14}/>{socket==='connected'?'STREAM LIVE':'RECONNECTING'}</span></div></header>
-      <div className="content"><div className="page-heading"><div><div className="eyebrow">POLYPULSE TERMINAL <span>/</span> {page.toUpperCase()}</div><h1>{title}</h1><p>{subtitle[page]}</p></div><div className="heading-right"><span className="date-label">{clock.toLocaleDateString([], {weekday:'short',month:'short',day:'numeric',year:'numeric'})}</span><span className="mode-pill"><span className="status-dot good"/>{health?.mode==='demo'?'DEMO DATA':'LIVE DATA'}</span></div></div>
+      <header className="topbar"><div className="crumb">WORKSPACE <span>/</span> <b>{title.toUpperCase()}</b></div><div className="top-actions"><button className="search-trigger" onClick={()=>setCommandOpen(true)}><Search size={15}/> Search markets or pages <kbd>⌘ K</kbd></button><span className="top-time">{clock.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',hour12:false})}</span><span className={`connection ${socket==='connected'?'online':''}`}><Radio size={14}/>{socket==='connected'?'API CONNECTED':'API RECONNECTING'}</span></div></header>
+      <div className="content"><div className="page-heading"><div><div className="eyebrow">POLYPULSE TERMINAL <span>/</span> {page.toUpperCase()}</div><h1>{title}</h1><p>{subtitle[page]}</p></div><div className="heading-right"><span className="date-label">{clock.toLocaleDateString([], {weekday:'short',month:'short',day:'numeric',year:'numeric'})}</span><span className="mode-pill"><span className={`status-dot ${mode==='demo'?'good':''}`}/>{mode==='demo'?'DEMO DATA':mode==='live'?'LIVE MODE':'MODE UNKNOWN'}</span></div></div>
       {error&&<div className="alert">API unavailable: {error}. Start the backend on port 8000.<button onClick={()=>setError('')}><X size={15}/></button></div>}
-      {health?.mode==='demo'&&<div className="demo-banner"><ShieldCheck size={16}/><span>DEMO ENVIRONMENT</span> All prices and trades shown here are synthetic sample data.</div>}
+      {mode==='demo'&&<div className="demo-banner"><ShieldCheck size={16}/><span>DEMO ENVIRONMENT</span> All prices and trades shown here are synthetic sample data.</div>}
+      {mode==='live'&&<div className="demo-banner"><Radio size={16}/><span>LIVE MODE</span> Books awaiting a snapshot, recovering, or stale are hidden from quotes and comparisons.</div>}
       {page==='overview'&&<>
-        <div className="stats-grid"><Stat label="TRACKED MARKETS" value={String(totalMarkets).padStart(2,'0')} note="Across 2 venues" icon={<BookOpen size={18}/>} /><Stat label="AVG. BOOK SPREAD" value={signed(avgSpread)} note="Across available books" icon={<ArrowUpRight size={18}/>} /><Stat label="EVENTS PROCESSED" value={(health?.counters.events||0).toLocaleString()} note="Since service start" icon={<Activity size={18}/>} /><Stat label="FEED STATUS" value={Object.values(health?.feeds||{}).filter(x=>x==='connected'||x==='demo').length+'/2'} note="Sources connected" icon={<Radio size={18}/>} /></div>
-        <div className="two-col"><section className="panel"><PanelHead eyebrow="MARKET WATCH" title="Live markets" action={<button className="text-btn" onClick={()=>setPage('orderbook')}>View orderbook →</button>}/><div className="table-wrap"><table><thead><tr><th>MARKET</th><th>VENUE</th><th className="num">BID</th><th className="num">ASK</th><th className="num">SPREAD</th></tr></thead><tbody>{books.map(b=><tr key={`${b.venue}:${b.market_id}`} onClick={()=>{setSelected(`${b.venue}:${b.market_id}`);setPage('orderbook')}}><td className="market-name">{short(b.market_id)}</td><td><Venue name={b.venue}/></td><td className="num green">{price(b.best_bid)}</td><td className="num red">{price(b.best_ask)}</td><td className="num">{b.best_bid==null||b.best_ask==null?'—':signed(b.best_ask-b.best_bid)}</td></tr>)}</tbody></table>{!books.length&&<Empty text="Waiting for the first orderbook snapshot"/>}</div></section>
+        <div className="stats-grid"><Stat label="TRACKED MARKETS" value={String(totalMarkets).padStart(2,'0')} note="Across exchange feeds" icon={<BookOpen size={18}/>} /><Stat label="AVG. BOOK SPREAD" value={signed(avgSpread)} note="Across valid books" icon={<ArrowUpRight size={18}/>} /><Stat label="EVENTS PROCESSED" value={(health?.counters.events||0).toLocaleString()} note="Since service start" icon={<Activity size={18}/>} /><Stat label="FEED STATUS" value={Object.entries(health?.feeds||{}).filter(([v,x])=>v!=='polygon'&&(x==='connected'||x==='demo')).length+'/2'} note="Exchange feeds connected" icon={<Radio size={18}/>} /></div>
+        <div className="two-col"><section className="panel"><PanelHead eyebrow="MARKET WATCH" title="Live markets" action={<button className="text-btn" onClick={()=>setPage('orderbook')}>View orderbook →</button>}/><div className="table-wrap"><table><thead><tr><th>MARKET</th><th>VENUE</th><th>STATUS</th><th className="num">BID</th><th className="num">ASK</th><th className="num">SPREAD</th></tr></thead><tbody>{books.map(b=><tr key={`${b.venue}:${b.market_id}`} onClick={()=>{setSelected(`${b.venue}:${b.market_id}`);setPage('orderbook')}}><td className="market-name">{short(b.market_id)}</td><td><Venue name={b.venue}/></td><td>{bookReliable(b)?'VALID':bookStale(b)?'STALE':(b.recovery_status||'RECOVERING').toUpperCase()}</td><td className="num green">{price(bookReliable(b)?b.best_bid:null)}</td><td className="num red">{price(bookReliable(b)?b.best_ask:null)}</td><td className="num">{!bookReliable(b)||b.best_bid==null||b.best_ask==null?'—':signed(b.best_ask-b.best_bid)}</td></tr>)}</tbody></table>{!books.length&&<Empty text="Waiting for the first orderbook snapshot"/>}</div></section>
         <section className="panel"><PanelHead eyebrow="CROSS-VENUE" title="Price opportunities" action={<button className="text-btn" onClick={()=>setPage('scanner')}>Open scanner →</button>}/><div className="opportunity-list">{sortedSpreads.map((s,i)=>{const edge=Math.max(s.buy_polymarket_sell_kalshi??-2,s.buy_kalshi_sell_polymarket??-2);return <div className="opportunity" key={s.name}><div className="op-index">0{i+1}</div><div><strong>{s.name}</strong><small>{edge>0?'Gross quote difference':'No positive gross quote difference'}</small></div><div className={`op-edge ${edge>0?'green':''}`}>{signed(edge)}</div></div>})}{!spreads.length&&<Empty text="Configure verified market pairs to compare venues"/>}</div><div className="panel-foot">Quote differences exclude fees and execution constraints.</div></section></div>
         <div className="bottom-grid"><section className="panel compact"><div className="mini-icon blue"><Database size={19}/></div><div><div className="mini-label">PERSISTED EVENTS</div><strong>{(health?.journal.events||0).toLocaleString()}</strong><span> in local journal</span></div></section><section className="panel compact"><div className="mini-icon purple"><Gauge size={19}/></div><div><div className="mini-label">SNAPSHOT RECOVERIES</div><strong>{health?.counters.recoveries||0}</strong><span> total</span></div></section><section className="panel compact"><div className="mini-icon teal"><Wallet size={19}/></div><div><div className="mini-label">TRACKED WALLETS</div><strong>{wallets.length}</strong><span> with trade records</span></div></section></div>
       </>}
-      {page==='orderbook'&&<><div className="toolbar"><label className="input-search"><Search size={16}/><input placeholder="Filter markets..." value={search} onChange={e=>setSearch(e.target.value)}/></label><select value={active?`${active.venue}:${active.market_id}`:''} onChange={e=>setSelected(e.target.value)}>{filtered.map(b=><option key={`${b.venue}:${b.market_id}`} value={`${b.venue}:${b.market_id}`}>{venueName(b.venue)} · {short(b.market_id)}</option>)}</select></div>{active?<><div className="stats-grid three"><Stat label="BEST BID" value={price(active.best_bid)} note={venueName(active.venue)} icon={<ArrowUpRight size={18}/>} tone="green"/><Stat label="BEST ASK" value={price(active.best_ask)} note="Normalized YES contract" icon={<ArrowDownRight size={18}/>} tone="red"/><Stat label="SPREAD" value={active.best_bid==null||active.best_ask==null?'—':signed(active.best_ask-active.best_bid)} note={`Sequence ${active.sequence}`} icon={<Activity size={18}/>} /></div><div className="two-col"><Ladder title="Ask depth" side="ask" levels={active.asks}/><Ladder title="Bid depth" side="bid" levels={active.bids}/></div><div className="bottom-grid two"><section className="panel compact"><div className="mini-icon blue"><BarChart3 size={19}/></div><div><div className="mini-label">BUY VWAP · 10 CONTRACTS</div><strong>{price(active.buy_vwap_10)}</strong></div></section><section className="panel compact"><div className="mini-icon purple"><Activity size={19}/></div><div><div className="mini-label">ORDER FLOW IMBALANCE</div><strong>{(active.imbalance*100).toFixed(1)}%</strong></div></section></div></>:<Empty text="No orderbook is available yet"/>}</>}
-      {page==='scanner'&&<section className="panel"><PanelHead eyebrow="VERIFIED PAIRS ONLY" title="Cross-venue comparison"/><div className="table-wrap"><table><thead><tr><th>OUTCOME</th><th className="num">POLY BID / ASK</th><th className="num">KALSHI BID / ASK</th><th className="num">BUY POLY</th><th className="num">BUY KALSHI</th></tr></thead><tbody>{sortedSpreads.map(s=><tr key={s.name}><td className="market-name">{s.name}</td><td className="num">{price(s.polymarket.best_bid)} / {price(s.polymarket.best_ask)}</td><td className="num">{price(s.kalshi.best_bid)} / {price(s.kalshi.best_ask)}</td><td className={`num ${(s.buy_polymarket_sell_kalshi??0)>0?'green':''}`}>{signed(s.buy_polymarket_sell_kalshi)}</td><td className={`num ${(s.buy_kalshi_sell_polymarket??0)>0?'green':''}`}>{signed(s.buy_kalshi_sell_polymarket)}</td></tr>)}</tbody></table>{!spreads.length&&<Empty text="No verified pairs with two available books"/>}</div><div className="panel-foot">Gross bid–ask differences only. Fees, available quantity, settlement rules and execution risk are not included.</div></section>}
-      {page==='wallets'&&<><div className="two-col wallet-layout"><section className="panel"><PanelHead eyebrow="WALLET DIRECTORY" title="Tracked wallets"/><div className="wallet-list">{wallets.map(w=><button className={`wallet-row ${wallet===w.wallet?'chosen':''}`} key={w.wallet} onClick={()=>setWallet(w.wallet)}><div className="wallet-avatar"><Wallet size={16}/></div><div><strong>{short(w.wallet)}</strong><small>{w.trade_count} trade{w.trade_count===1?'':'s'}</small></div><span>→</span></button>)}{!wallets.length&&<Empty text="No wallet-attributed trades have been ingested"/>}</div></section><section className="panel"><PanelHead eyebrow="MARKOUT ANALYSIS" title={wallet?short(wallet):'Select a wallet'}/>{markout?<><div className="markout-cards">{markout.summary.map(s=><div className="markout-card" key={s.horizon_seconds}><span>{s.horizon_seconds} SECOND MARKOUT</span><strong className={(s.average_markout??0)>0?'green':''}>{signed(s.average_markout)}</strong><small>{s.available_count}/{s.trade_count} observations · {s.positive_percentage==null?'—':s.positive_percentage.toFixed(0)+'%'} positive</small></div>)}</div><div className="panel-foot">Missing future prices remain unavailable until a midpoint is observed near the horizon.</div></>:<Empty text="Choose a wallet to inspect its markouts"/>}</section></div></>}
-      {page==='trades'&&<section className="panel"><PanelHead eyebrow="EXECUTION LOG" title="Recent trades"/><div className="table-wrap"><table><thead><tr><th>TIME</th><th>WALLET</th><th>VENUE</th><th>MARKET</th><th>SIDE</th><th className="num">PRICE</th><th className="num">QUANTITY</th></tr></thead><tbody>{trades.map(t=><tr key={t.trade_id}><td>{time(t.executed_at)}</td><td className="mono">{short(t.wallet)}</td><td><Venue name={t.venue}/></td><td className="market-name">{short(t.market_id)}</td><td><span className={`side-tag ${t.side}`}>{t.side.toUpperCase()}</span></td><td className="num">{price(t.price)}</td><td className="num">{t.quantity.toFixed(2)}</td></tr>)}</tbody></table>{!trades.length&&<Empty text="No trade records available yet"/>}</div></section>}
-      {page==='health'&&<><div className="stats-grid three"><Stat label="INGESTED EVENTS" value={(health?.journal.events||0).toLocaleString()} note="Durable local journal" icon={<Database size={18}/>} /><Stat label="SEQUENCE GAPS" value={String(health?.counters.gaps||0)} note="Kalshi feed" icon={<Activity size={18}/>} /><Stat label="PENDING EXPORT" value={String(health?.journal.pending_export||0)} note={health?.storage.clickhouse||'ClickHouse disabled'} icon={<Gauge size={18}/>} /></div><div className="two-col"><section className="panel"><PanelHead eyebrow="CONNECTIONS" title="Feed status"/><div className="health-list">{Object.entries(health?.feeds||{}).map(([name,status])=><div key={name}><span><span className={`status-dot ${status==='connected'||status==='demo'?'good':''}`}/>{venueName(name)}</span><strong>{status.toUpperCase()}</strong></div>)}</div></section><section className="panel"><PanelHead eyebrow="RELIABILITY" title="Pipeline counters"/><div className="health-list"><div><span>Snapshot recoveries</span><strong>{health?.counters.recoveries||0}</strong></div><div><span>Duplicate events</span><strong>{health?.counters.duplicates||0}</strong></div><div><span>Stored snapshots</span><strong>{health?.journal.snapshots||0}</strong></div><div><span>Service uptime</span><strong>{Math.floor((health?.uptime_seconds||0)/60)}m {(health?.uptime_seconds||0)%60}s</strong></div></div></section></div></>}
+      {page==='orderbook'&&<><div className="toolbar"><label className="input-search"><Search size={16}/><input placeholder="Filter markets..." value={search} onChange={e=>setSearch(e.target.value)}/></label><select value={active?`${active.venue}:${active.market_id}`:''} onChange={e=>setSelected(e.target.value)}>{filtered.map(b=><option key={`${b.venue}:${b.market_id}`} value={`${b.venue}:${b.market_id}`}>{venueName(b.venue)} · {short(b.market_id)}</option>)}</select></div>{active?<><div className="panel-foot">Book: {bookReliable(active)?'VALID':bookStale(active)?'STALE':(active.recovery_status||'RECOVERING').toUpperCase()} · Last event: {lastEvent(active.last_received_timestamp)} · {venueName(active.venue)} feed: {health?.feeds[active.venue]||'waiting'}</div><div className="stats-grid three"><Stat label="BEST BID" value={price(bookReliable(active)?active.best_bid:null)} note={venueName(active.venue)} icon={<ArrowUpRight size={18}/>} tone="green"/><Stat label="BEST ASK" value={price(bookReliable(active)?active.best_ask:null)} note="Normalized YES contract" icon={<ArrowDownRight size={18}/>} tone="red"/><Stat label="SPREAD" value={!bookReliable(active)||active.best_bid==null||active.best_ask==null?'—':signed(active.best_ask-active.best_bid)} note={`Sequence ${active.sequence}`} icon={<Activity size={18}/>} /></div><div className="two-col"><Ladder title="Ask depth" side="ask" levels={bookReliable(active)?active.asks:[]}/><Ladder title="Bid depth" side="bid" levels={bookReliable(active)?active.bids:[]}/></div><div className="bottom-grid two"><section className="panel compact"><div className="mini-icon blue"><BarChart3 size={19}/></div><div><div className="mini-label">BUY VWAP · 10 CONTRACTS</div><strong>{price(bookReliable(active)?active.buy_vwap_10:null)}</strong></div></section><section className="panel compact"><div className="mini-icon purple"><Activity size={19}/></div><div><div className="mini-label">ORDER FLOW IMBALANCE</div><strong>{bookReliable(active)?(active.imbalance*100).toFixed(1)+'%':'—'}</strong></div></section></div></>:<Empty text="No orderbook is available yet"/>}</>}
+      {page==='scanner'&&<><section className="panel"><PanelHead eyebrow="VERIFIED PAIRS ONLY" title="Cross-venue comparison"/><div className="table-wrap"><table><thead><tr><th>OUTCOME</th><th className="num">POLY BID / ASK</th><th className="num">KALSHI BID / ASK</th><th className="num">BUY POLY</th><th className="num">BUY KALSHI</th></tr></thead><tbody>{sortedSpreads.map(s=><tr key={s.name}><td className="market-name">{s.name}</td><td className="num">{price(s.polymarket.best_bid)} / {price(s.polymarket.best_ask)}</td><td className="num">{price(s.kalshi.best_bid)} / {price(s.kalshi.best_ask)}</td><td className={`num ${(s.buy_polymarket_sell_kalshi??0)>0?'green':''}`}>{signed(s.buy_polymarket_sell_kalshi)}</td><td className={`num ${(s.buy_kalshi_sell_polymarket??0)>0?'green':''}`}>{signed(s.buy_kalshi_sell_polymarket)}</td></tr>)}</tbody></table>{!spreads.length&&<Empty text="No verified pairs with two available books"/>}</div><div className="panel-foot">Gross bid–ask differences only. Fees, available quantity, settlement rules and execution risk are not included.</div></section><section className="panel"><PanelHead eyebrow="OPERATOR REVIEW" title="Contract registry"/><form className="contract-form" onSubmit={saveContract}><label>Polymarket asset ID<input required value={contractForm.polymarket_asset_id} onChange={e=>setContractForm({...contractForm,polymarket_asset_id:e.target.value})}/></label><label>Kalshi ticker<input required value={contractForm.kalshi_ticker} onChange={e=>setContractForm({...contractForm,kalshi_ticker:e.target.value})}/></label><label>Event description<input required value={contractForm.event_description} onChange={e=>setContractForm({...contractForm,event_description:e.target.value})}/></label><label>Outcome equivalence<textarea required value={contractForm.outcome_equivalence} onChange={e=>setContractForm({...contractForm,outcome_equivalence:e.target.value})}/></label><label>Resolution source<input required value={contractForm.resolution_source} onChange={e=>setContractForm({...contractForm,resolution_source:e.target.value})}/></label><label>Expiration (UTC)<input type="datetime-local" required value={contractForm.expiration.slice(0,16)} onChange={e=>setContractForm({...contractForm,expiration:e.target.value})}/></label><label>Verification status<select value={contractForm.verification_status} onChange={e=>setContractForm({...contractForm,verification_status:e.target.value as ContractPair['verification_status']})}><option value="unverified">Unverified</option><option value="verified">Verified by operator</option><option value="rejected">Rejected</option></select></label><div className="contract-actions"><button type="submit">Save review</button><button type="button" onClick={()=>setContractForm(emptyContract)}>Clear</button></div></form>{contractError&&<div className="alert">{contractError}</div>}<div className="contract-list">{contracts.map(pair=><div key={`${pair.polymarket_asset_id}:${pair.kalshi_ticker}`}><strong>{pair.event_description}</strong><span>{pair.verification_status.toUpperCase()} · {short(pair.polymarket_asset_id)} ↔ {pair.kalshi_ticker}</span><span>Outcome: {pair.outcome_equivalence}</span><span>Resolution: {pair.resolution_source} · Expires {new Date(pair.expiration).toLocaleString()}</span><button onClick={()=>setContractForm({...pair,expiration:pair.expiration.slice(0,16)})}>Edit</button><button onClick={()=>deleteContract(pair)}>Delete</button></div>)}</div>{!contracts.length&&<Empty text="No manually reviewed contract pairs"/>}</section></>}
+      {page==='wallets'&&<>
+        <div className="demo-banner">
+          <ShieldCheck size={16}/>
+          <span>ADVERSE SELECTION ENGINE</span>
+          Execution markout evaluates post-trade market drift across 5s, 30s, and 60s observation horizons. Measures adverse selection; does not reflect realized portfolio P&L.
+        </div>
+        <div className="stats-grid">
+          <Stat label="TRACKED WALLETS" value={String(wallets.length).padStart(2,'0')} note="Attributed to fills" icon={<Wallet size={18}/>} />
+          <Stat label="ACTIVE HORIZON" value={`${rankingHorizon}S`} note="Adverse selection window" icon={<Gauge size={18}/>} />
+          <Stat label="MEDIAN SAMPLE DRIFT" value={signedBps(markoutDist?.quantiles?.median)} note="Across active trades" icon={<ArrowUpRight size={18}/>} tone={markoutDist?.quantiles?.median!=null && markoutDist.quantiles.median >= 0 ? "green" : "red"} />
+          <Stat label="MARKOUT WIN RATE" value={markoutDist?.win_rate!=null?`${markoutDist.win_rate.toFixed(1)}%`:'—'} note="Positive drift %" icon={<Activity size={18}/>} />
+        </div>
+        <div className="toolbar" style={{alignItems:'center'}}>
+          <label className="input-search">
+            <Search size={16}/>
+            <input placeholder="Filter wallets by address..." value={walletSearch} onChange={e=>setWalletSearch(e.target.value)}/>
+          </label>
+          <div className="time-pills">
+            {([5, 30, 60] as const).map(h=><button key={h} className={`time-pill ${rankingHorizon===h?'active':''}`} onClick={()=>setRankingHorizon(h)}>{h}S HORIZON</button>)}
+          </div>
+          <div className="time-pills">
+            <button className={`time-pill ${minSampleFilter===5?'active':''}`} onClick={()=>setMinSampleFilter(5)}>N ≥ 5 (QUALIFIED)</button>
+            <button className={`time-pill ${minSampleFilter===1?'active':''}`} onClick={()=>setMinSampleFilter(1)}>ALL SAMPLES</button>
+          </div>
+        </div>
+        <div className="two-col wallet-layout">
+          <section className="panel">
+            <PanelHead eyebrow="WALLET DIRECTORY & ALPHA RANKINGS" title="Wallet Leaderboard"/>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>WALLET</th>
+                    <th className="num">TRADES</th>
+                    <th className="num">AVG MARKOUT</th>
+                    <th className="num">WIN RATE</th>
+                    <th>STATUS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(walletRankings.length ? walletRankings : wallets.map(w=>({
+                    wallet: w.wallet,
+                    trade_count: w.trade_count,
+                    available_count: 0,
+                    horizon_seconds: rankingHorizon,
+                    avg_markout: null,
+                    avg_markout_bps: null,
+                    positive_percentage: null,
+                    qualified: w.trade_count >= 5,
+                    sample_status: w.trade_count >= 5 ? 'qualified' : 'insufficient_sample'
+                  })))
+                  .filter(r => !walletSearch || r.wallet.toLowerCase().includes(walletSearch.toLowerCase()))
+                  .map((r, idx) => {
+                    const isChosen = wallet.toLowerCase() === r.wallet.toLowerCase()
+                    const isPos = (r.avg_markout_bps ?? 0) > 0
+                    const isNeg = (r.avg_markout_bps ?? 0) < 0
+                    return (
+                      <tr key={r.wallet} className={isChosen ? 'chosen' : ''} onClick={()=>setWallet(r.wallet)}>
+                        <td className="mono">{String(idx + 1).padStart(2, '0')}</td>
+                        <td className="mono" title={r.wallet}><strong>{short(r.wallet)}</strong></td>
+                        <td className="num">{r.trade_count}</td>
+                        <td className={`num ${isPos ? 'green' : isNeg ? 'red' : ''}`}>{signedBps(r.avg_markout_bps)}</td>
+                        <td className="num">{r.positive_percentage != null ? `${r.positive_percentage.toFixed(0)}%` : '—'}</td>
+                        <td>
+                          <span className={`status-pill ${r.qualified ? 'good' : 'muted'}`}>
+                            {r.qualified ? 'QUALIFIED' : 'N < 5'}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+              {!wallets.length && <Empty text="No wallet-attributed trades recorded yet"/>}
+            </div>
+          </section>
+
+          <div>
+            <section className="panel" style={{marginBottom:'19px'}}>
+              <PanelHead eyebrow="EXECUTION DRIFT ANALYSIS" title={wallet ? short(wallet) : 'Select a wallet'}/>
+              {wallet ? <>
+                {walletProfile && <div style={{display:'flex',gap:'15px',flexWrap:'wrap',padding:'14px 20px',borderBottom:'1px solid #263448',fontSize:'11px',color:'#8c9eb0'}}>
+                  <div>WALLET: <strong className="mono" style={{color:'#e8edf4'}}>{wallet}</strong></div>
+                  <div>VOLUME: <strong style={{color:'#e8edf4'}}>{walletProfile.total_volume.toLocaleString()} units</strong></div>
+                  <div>NOTIONAL: <strong style={{color:'#e8edf4'}}>${walletProfile.total_notional.toLocaleString()}</strong></div>
+                  <div>TYPE: <span className="badge-attribution maker">{walletProfile.maker_count} Maker</span> <span className="badge-attribution taker">{walletProfile.taker_count} Taker</span></div>
+                </div>}
+
+                {markout ? <div className="markout-cards">
+                  {markout.summary.map(s => {
+                    const isPos = (s.average_markout_bps ?? s.average_markout ?? 0) > 0
+                    const isNeg = (s.average_markout_bps ?? s.average_markout ?? 0) < 0
+                    return (
+                      <div className="markout-card" key={s.horizon_seconds}>
+                        <span>{s.horizon_seconds}S POST-TRADE MARKOUT</span>
+                        <strong className={isPos ? 'green' : isNeg ? 'red' : ''}>
+                          {s.average_markout_bps != null ? signedBps(s.average_markout_bps) : signed(s.average_markout)}
+                        </strong>
+                        <small>{s.average_markout != null ? signedDollars(s.average_markout) + ' · ' : ''}{s.available_count}/{s.trade_count} obs · {s.positive_percentage == null ? '—' : s.positive_percentage.toFixed(0) + '%'} positive</small>
+                        {s.status_counts && <div style={{display:'flex',gap:'4px',marginTop:'8px'}}>
+                          <span className="status-pill good" title="Available">{s.status_counts.available ?? 0}</span>
+                          <span className="status-pill warn" title="Crossed">{s.status_counts.crossed ?? 0}</span>
+                          <span className="status-pill bad" title="Stale">{s.status_counts.stale ?? 0}</span>
+                          <span className="status-pill muted" title="Unavailable">{s.status_counts.unavailable ?? 0}</span>
+                        </div>}
+                      </div>
+                    )
+                  })}
+                </div> : <Empty text="Loading markout observations..."/>}
+
+                {walletTrades.length > 0 && <div className="table-wrap" style={{borderTop:'1px solid #263448'}}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>TIME</th>
+                        <th>MARKET</th>
+                        <th>ATTRIBUTION</th>
+                        <th>SIDE</th>
+                        <th className="num">PRICE</th>
+                        <th className="num">NOTIONAL</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {walletTrades.slice(0, 8).map(t => (
+                        <tr key={t.trade_id}>
+                          <td className="mono">{t.received_timestamp ? t.received_timestamp.slice(11, 19) : '—'}</td>
+                          <td className="market-name">{short(t.market_id)}</td>
+                          <td><span className={`badge-attribution ${t.attribution_type}`}>{t.attribution_type.toUpperCase()}</span></td>
+                          <td><span className={`side-tag ${t.side}`}>{t.side.toUpperCase()}</span></td>
+                          <td className="num">{price(parseFloat(t.price))}</td>
+                          <td className="num">${parseFloat(t.notional).toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>}
+                <div className="panel-foot">Post-trade midpoints are sampled at t + H. Rejects crossed/locked orderbooks and stale feeds.</div>
+              </> : <Empty text="Select a wallet from the leaderboard to inspect execution quality and post-trade markout"/>}
+            </section>
+
+            <section className="panel">
+              <PanelHead eyebrow="MICROSTRUCTURE ADVERSE SELECTION" title={`${rankingHorizon}s Drift Distribution`}/>
+              <div className="dist-grid">
+                <div className="dist-card"><span>P10 (TAIL LOSS)</span><strong className={(markoutDist?.quantiles?.p10 ?? 0) >= 0 ? 'green' : 'red'}>{signedBps(markoutDist?.quantiles?.p10)}</strong></div>
+                <div className="dist-card"><span>P25 (LOWER)</span><strong className={(markoutDist?.quantiles?.p25 ?? 0) >= 0 ? 'green' : 'red'}>{signedBps(markoutDist?.quantiles?.p25)}</strong></div>
+                <div className="dist-card"><span>MEDIAN (P50)</span><strong className={(markoutDist?.quantiles?.median ?? 0) >= 0 ? 'green' : 'red'}>{signedBps(markoutDist?.quantiles?.median)}</strong></div>
+                <div className="dist-card"><span>P75 (UPPER)</span><strong className={(markoutDist?.quantiles?.p75 ?? 0) >= 0 ? 'green' : 'red'}>{signedBps(markoutDist?.quantiles?.p75)}</strong></div>
+                <div className="dist-card"><span>P90 (ALPHA TAIL)</span><strong className={(markoutDist?.quantiles?.p90 ?? 0) >= 0 ? 'green' : 'red'}>{signedBps(markoutDist?.quantiles?.p90)}</strong></div>
+              </div>
+              <div className="panel-foot">
+                Range: {signedBps(markoutDist?.min_bps)} to {signedBps(markoutDist?.max_bps)} · Mean: {signedBps(markoutDist?.avg_bps)} · Sample size: {markoutDist?.available_count ?? 0} trades
+              </div>
+            </section>
+          </div>
+        </div>
+      </>}
+      {page==='trades'&&<section className="panel"><PanelHead eyebrow="EXECUTION LOG" title="Recent trades"/><div className="table-wrap"><table><thead><tr><th>TIME</th><th>WALLET</th><th>VENUE</th><th>MARKET</th><th>SIDE</th><th className="num">PRICE</th><th className="num">QUANTITY</th></tr></thead><tbody>{trades.map(t=><tr key={t.trade_id}><td>{time(t.executed_at)}</td><td className="mono">{t.wallet?short(t.wallet):'—'}</td><td><Venue name={t.venue}/></td><td className="market-name">{short(t.market_id)}</td><td><span className={`side-tag ${t.side}`}>{t.side.toUpperCase()}</span></td><td className="num">{price(t.price)}</td><td className="num">{t.quantity==null?'—':t.quantity.toFixed(2)}</td></tr>)}</tbody></table>{!trades.length&&<Empty text="No trade records available yet"/>}</div></section>}
+      {page==='analytics'&&<>
+        <div className="analytics-controls">
+          <label className="input-search">
+            <Search size={16}/>
+            <input placeholder="Filter markets..." value={search} onChange={e=>setSearch(e.target.value)}/>
+          </label>
+          <select value={active?`${active.venue}:${active.market_id}`:''} onChange={e=>setSelected(e.target.value)}>
+            {filtered.map(b=><option key={`${b.venue}:${b.market_id}`} value={`${b.venue}:${b.market_id}`}>{venueName(b.venue)} · {short(b.market_id)}</option>)}
+          </select>
+          <div className="time-pills">
+            {(['1h','6h','24h','7d'] as const).map(w=><button key={w} className={`time-pill ${anWin===w?'active':''}`} onClick={()=>setAnWin(w)}>{w.toUpperCase()}</button>)}
+          </div>
+          <div className="time-pills">
+            {(['1m','5m','1h','1d'] as const).map(r=><button key={r} className={`time-pill ${anRes===r?'active':''}`} onClick={()=>setAnRes(r)}>{r.toUpperCase()}</button>)}
+          </div>
+          {anLoading&&<span className="mono" style={{fontSize:'11px',color:'#8c9eb0'}}>Scanning ClickHouse...</span>}
+        </div>
+        {storageStats?.status==='disabled'&&!anSummary&&<div className="demo-banner"><Database size={16}/><span>CLICKHOUSE OFFLINE</span> ClickHouse analytics service is disabled or unreachable. Start ClickHouse on port 8123 to query historical OLAP aggregates.</div>}
+        <div className="stats-grid">
+          <Stat label={`TOTAL VOLUME (${anWin.toUpperCase()})`} value={anSummary?('$' + anSummary.dollar_volume.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'$0.00'} note={anSummary?`${anSummary.total_volume.toLocaleString()} contracts`:'No activity'} icon={<BarChart3 size={18}/>} />
+          <Stat label="VOLUME-WEIGHTED AVG" value={price(anSummary?.vwap)} note="VWAP across window" icon={<Activity size={18}/>} />
+          <Stat label="BEST BID / ASK" value={anSummary?.best_bid!=null&&anSummary?.best_ask!=null?`${price(anSummary.best_bid)} / ${price(anSummary.best_ask)}`:'—'} note={anSummary?.spread_bps!=null?`${anSummary.spread_bps.toFixed(0)} bps spread`:'No active quote'} icon={<ArrowUpRight size={18}/>} tone="green"/>
+          <Stat label="EXECUTED TRADES" value={(anSummary?.trade_count||0).toLocaleString()} note={anSummary?`Buy: ${anSummary.buy_volume.toFixed(1)} | Sell: ${anSummary.sell_volume.toFixed(1)}`:'0 trades'} icon={<ListFilter size={18}/>} />
+        </div>
+        <div className="two-col">
+          <section className="panel">
+            <PanelHead eyebrow="PRE-AGGREGATED MATERIALIZED VIEW" title={`OHLCV Candles (${anRes.toUpperCase()})`}/>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>TIME</th>
+                    <th className="num">OPEN</th>
+                    <th className="num">HIGH</th>
+                    <th className="num">LOW</th>
+                    <th className="num">CLOSE</th>
+                    <th className="num">VOLUME</th>
+                    <th className="num">VWAP</th>
+                    <th className="num">TRADES</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {anCandles.map((c,i)=>{
+                    const isUp = c.close >= c.open
+                    return (
+                      <tr key={`${c.time}-${i}`}>
+                        <td className="mono">{c.time.slice(11,19)}</td>
+                        <td className="num">{price(c.open)}</td>
+                        <td className="num">{price(c.high)}</td>
+                        <td className="num">{price(c.low)}</td>
+                        <td className={`num ${isUp?'green':'red'}`}>{price(c.close)}</td>
+                        <td className="num">{c.volume.toFixed(2)}</td>
+                        <td className="num">{price(c.avg_price)}</td>
+                        <td className="num">{c.trade_count}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+              {!anCandles.length&&<Empty text="No trade candles available in selected window"/>}
+            </div>
+          </section>
+          <section className="panel">
+            <PanelHead eyebrow="ORDERBOOK SPREAD & DEPTH" title="Spread Trajectory"/>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>TIME</th>
+                    <th className="num">AVG SPREAD</th>
+                    <th className="num">MIN / MAX</th>
+                    <th className="num">BID DEPTH</th>
+                    <th className="num">ASK DEPTH</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {anSpread.map((s,i)=>(
+                    <tr key={`${s.time}-${i}`}>
+                      <td className="mono">{s.time.slice(11,19)}</td>
+                      <td className="num green">{signed(s.avg_spread)}</td>
+                      <td className="num">{price(s.min_spread)} / {price(s.max_spread)}</td>
+                      <td className="num">{s.avg_bid_depth!=null?s.avg_bid_depth.toFixed(1):'—'}</td>
+                      <td className="num">{s.avg_ask_depth!=null?s.avg_ask_depth.toFixed(1):'—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!anSpread.length&&<Empty text="No snapshot trajectory records found"/>}
+            </div>
+          </section>
+        </div>
+        <section className="panel">
+          <PanelHead eyebrow="STORAGE ENGINE & CODEC RETENTION" title="ClickHouse Part & Compression Telemetry"/>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>TABLE</th>
+                  <th className="num">ROW COUNT</th>
+                  <th className="num">COMPRESSED</th>
+                  <th className="num">UNCOMPRESSED</th>
+                  <th className="num">COMPRESSION RATIO</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(storageStats?.tables||[]).map(t=>(
+                  <tr key={t.table}>
+                    <td className="market-name mono">{t.table}</td>
+                    <td className="num">{t.rows.toLocaleString()}</td>
+                    <td className="num">{(t.compressed_bytes/1024).toFixed(1)} KB</td>
+                    <td className="num">{(t.uncompressed_bytes/1024).toFixed(1)} KB</td>
+                    <td className="num green">{t.compression_ratio.toFixed(2)}x</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!storageStats?.tables?.length&&<Empty text="ClickHouse storage telemetry unavailable"/>}
+          </div>
+          <div className="panel-foot">
+            Status: {storageStats?.status?.toUpperCase()||'UNKNOWN'} · Total Active Rows: {(storageStats?.total_rows||0).toLocaleString()} · Aggregate Compression: {storageStats?.compression_ratio?storageStats.compression_ratio.toFixed(2)+'x':'—'}
+          </div>
+        </section>
+      </>}
+      {page==='health'&&<><div className="stats-grid three"><Stat label="INGESTED EVENTS" value={(health?.journal.events||0).toLocaleString()} note="Durable local journal" icon={<Database size={18}/>} /><Stat label="SEQUENCE GAPS" value={String(health?.counters.gaps||0)} note="Kalshi feed" icon={<Activity size={18}/>} /><Stat label="PENDING EXPORT" value={String(health?.journal.pending_export||0)} note={health?.storage.clickhouse||'ClickHouse disabled'} icon={<Gauge size={18}/>} /></div><div className="two-col"><section className="panel"><PanelHead eyebrow="CONNECTIONS" title="Feed status"/><div className="health-list">{Object.entries(health?.feeds||{}).map(([name,status])=><div key={name}><span><span className={`status-dot ${status==='connected'||status==='demo'?'good':''}`}/>{venueName(name)} · last event {lastEvent(health?.feed_details?.[name]?.last_received_timestamp)}</span><strong>{status.toUpperCase()}</strong></div>)}</div></section><section className="panel"><PanelHead eyebrow="RELIABILITY" title="Pipeline counters"/><div className="health-list"><div><span>Snapshot recoveries</span><strong>{health?.counters.recoveries||0}</strong></div><div><span>Duplicate events</span><strong>{health?.counters.duplicates||0}</strong></div><div><span>WebSocket reconnects</span><strong>{health?.counters.reconnects||0}</strong></div><div><span>Received / processed per second</span><strong>{health?.rates?.events_received_per_second||0} / {health?.rates?.events_processed_per_second||0}</strong></div><div><span>Ingestion lag</span><strong>{health?.ingestion_lag_seconds==null?'—':health.ingestion_lag_seconds.toFixed(2)+'s'}</strong></div><div><span>ClickHouse insert latency</span><strong>{health?.storage.insert_latency_ms==null?'—':health.storage.insert_latency_ms.toFixed(1)+'ms'}</strong></div><div><span>Orderbook processing p95</span><strong>{health?.rates?.orderbook_processing_latency_ms_p95==null?'—':health.rates.orderbook_processing_latency_ms_p95.toFixed(1)+'ms'}</strong></div><div><span>Stored snapshots</span><strong>{health?.journal.snapshots||0}</strong></div><div><span>Service uptime</span><strong>{Math.floor((health?.uptime_seconds||0)/60)}m {Math.floor((health?.uptime_seconds||0)%60)}s</strong></div></div></section></div></>}
       </div>
-      <footer className="footer"><span><span className={`status-dot ${socket==='connected'?'good':''}`}/> {socket==='connected'?'Connected to PolyPulse':'Connecting to API'}</span><span>{totalMarkets} markets monitored <i>•</i> {health?.mode==='demo'?'Synthetic data':'Live venue feeds'} <i>•</i> Local time {clock.toLocaleTimeString()}</span></footer>
+      <footer className="footer"><span><span className={`status-dot ${socket==='connected'?'good':''}`}/> {socket==='connected'?'Connected to PolyPulse':'Connecting to API'}</span><span>{totalMarkets} markets monitored <i>•</i> {mode==='demo'?'Synthetic data':mode==='live'?'Live venue feeds':'Waiting for mode'} <i>•</i> Local time {clock.toLocaleTimeString()}</span></footer>
     </main>
     {commandOpen&&<div className="modal-backdrop" onClick={()=>setCommandOpen(false)}><div className="command" onClick={e=>e.stopPropagation()}><div className="command-search"><Search size={19}/><input autoFocus value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search pages and markets..."/><kbd>ESC</kbd></div><div className="command-label">PAGES</div>{nav.filter(n=>n.label.toLowerCase().includes(search.toLowerCase())).map(n=><button key={n.id} onClick={()=>{setPage(n.id);setCommandOpen(false);setSearch('')}}><n.icon size={17}/>{n.label}<kbd>{n.shortcut}</kbd></button>)}<div className="command-label">MARKETS</div>{filtered.slice(0,6).map(b=><button key={`${b.venue}:${b.market_id}`} onClick={()=>{setSelected(`${b.venue}:${b.market_id}`);setPage('orderbook');setCommandOpen(false);setSearch('')}}><BookOpen size={17}/>{venueName(b.venue)} · {short(b.market_id)}</button>)}</div></div>}
   </div>

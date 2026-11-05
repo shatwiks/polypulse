@@ -17,6 +17,15 @@ def main():
     suffix = ".dll" if sys.platform == "win32" else ".dylib" if sys.platform == "darwin" else ".so"
     library = BUILD / ("polypulse" + suffix)
     flags = ["-static"] if sys.platform == "win32" else []
+    if sys.platform == "win32" and library.exists():
+        old_lib = library.with_name("polypulse_old" + suffix)
+        try:
+            if old_lib.exists():
+                try: old_lib.unlink()
+                except Exception: pass
+            library.rename(old_lib)
+        except Exception:
+            pass
     try:
         subprocess.run([compiler, "-std=c++20", "-O2", "-shared", "-fPIC", *flags, "-I", str(ROOT / "engine/include"), str(ROOT / "engine/src/orderbook.cpp"), "-o", str(library)], check=True)
         print(library)

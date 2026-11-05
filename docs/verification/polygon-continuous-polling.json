@@ -1,0 +1,73 @@
+{
+  "timestamp_utc": "2026-11-04T15:32:21.390+00:00",
+  "rpc_url": "https://polygon-bor-rpc.publicnode.com",
+  "database": "test_polygon_continuous.db",
+  "steps": {
+    "step1_chain_verification": {
+      "chain_id": 137,
+      "valid": true,
+      "latest_block": 96733925,
+      "configured_confirmations": 12,
+      "safe_block": 96733913,
+      "depth_respected": true
+    },
+    "step2_polling_and_checkpoint": {
+      "start_target": 96733905,
+      "checkpoint_persisted": 96733914,
+      "polygon_events_logged": 667,
+      "polygon_trades_recorded": 667,
+      "sample_trades": [
+        {
+          "trade_id": "d897d5d9-3575-bc4b-aa89-6465170fd8f1",
+          "wallet": "0xa87a42e590168fd15e1243527fd337602e58fafc",
+          "venue": "polygon",
+          "market_id": "17197734606326131940251430115862522610201934353523516541015113349980690220870",
+          "side": "buy",
+          "price": 0.49,
+          "quantity": 5.0,
+          "executed_at": 1793806314.0
+        },
+        {
+          "trade_id": "cdf9d6c3-63a6-010b-f81b-54cb8dc11f7d",
+          "wallet": "0x21f4c1a1be34a39a7bc20985df4b7e5a39fb691d",
+          "venue": "polygon",
+          "market_id": "54082693687752909940734800704516040568067727180160004122264758068311946555154",
+          "side": "buy",
+          "price": 0.51,
+          "quantity": 5.0,
+          "executed_at": 1793806314.0
+        },
+        {
+          "trade_id": "118bf7b9-8bd9-9d3e-76db-03c3245d8b84",
+          "wallet": "0x3e9ff2dbf2a6356ee47049e9f3c43a70cb55d57f",
+          "venue": "polygon",
+          "market_id": "33339798372916037220786136133406478491116150628220441951753426683441228279665",
+          "side": "sell",
+          "price": 0.002,
+          "quantity": 5.0,
+          "executed_at": 1793806314.0
+        }
+      ],
+      "checkpoint_advanced": true
+    },
+    "step3_restart_verification": {
+      "checkpoint_restored": 96733914,
+      "matches_previous": true,
+      "initial_duplicates": 0,
+      "duplicate_rejected": true,
+      "duplicates_counter": 1,
+      "event_count_uninflated": true
+    },
+    "step4_outage_handling": {
+      "exception_caught": "ConnectError",
+      "feed_status": "retrying",
+      "status_is_retrying": true
+    }
+  },
+  "limitations": [
+    "V1 exchange contracts are not decoded by this pipeline (V2 OrderFilled only).",
+    "Chain reorganizations deeper than the configured confirmation depth (12 blocks) require manual replay.",
+    "Historical fill replay rate is limited by public RPC node rate limits."
+  ],
+  "overall_verification_status": "PASSED"
+}

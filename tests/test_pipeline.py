@@ -13,13 +13,13 @@ class PipelineTests(unittest.TestCase):
     def test_engine_snapshot_update_and_vwap(self):
         book = Book()
         try:
-            book.snapshot([(5000, 100_000), (4800, 200_000)], [(5500, 100_000), (5700, 200_000)], 1)
+            book.snapshot([(500000, 10_000_000), (480000, 20_000_000)], [(550000, 10_000_000), (570000, 20_000_000)], 1)
             self.assertEqual(book.view()["best_bid"], 0.5)
             self.assertAlmostEqual(book.view()["buy_vwap_10"], 0.55)
-            book.set_level("bid", 5100, 50_000, 2)
+            book.set_level("bid", 510000, 5_000_000, 2)
             self.assertEqual(book.view()["best_bid"], 0.51)
             with self.assertRaises(ValueError):
-                book.set_level("bid", 5200, 50_000, 2)
+                book.set_level("bid", 520000, 5_000_000, 2)
         finally:
             book.close()
 
@@ -37,13 +37,13 @@ class PipelineTests(unittest.TestCase):
             journal = Journal(Path(folder) / "test.db")
             try:
                 state = MarketState(journal)
-                state.snapshot("polymarket", "asset", [(4900, 100_000)], [(5100, 100_000)], 1)
-                state.level("polymarket", "asset", "bid", 5000, 90_000, 2)
+                state.snapshot("polymarket", "asset", [(490000, 10_000_000)], [(510000, 10_000_000)], 1)
+                state.level("polymarket", "asset", "bid", 500000, 9_000_000, 2)
                 self.assertEqual(journal.stats()["events"], 2)
                 with self.assertRaises(ValueError):
-                    state.snapshot("polymarket", "asset", [(4900, 100_000)], [(5100, 100_000)], 1)
+                    state.snapshot("polymarket", "asset", [(490000, 10_000_000)], [(510000, 10_000_000)], 1)
                 state.reset_venue("polymarket")
-                state.snapshot("polymarket", "asset", [(4900, 100_000)], [(5100, 100_000)], 1)
+                state.snapshot("polymarket", "asset", [(490000, 10_000_000)], [(510000, 10_000_000)], 1)
                 self.assertEqual(journal.stats()["events"], 2)
                 self.assertEqual(journal.stats()["snapshots"], 3)
                 self.assertEqual(state.get("polymarket", "asset")["best_bid"], 0.49)

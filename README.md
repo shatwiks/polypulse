@@ -35,7 +35,9 @@
 
 ---
 
-PolyPulse is a production-grade, low-latency market data pipeline and quantitative analytics terminal built for binary prediction markets (specifically **Polymarket** and **Kalshi**). It normalizes disparate WebSocket streams into integer ticks, evaluates orderbook depth in sub-microsecond C++20 kernels, journals ticks to local SQLite WAL storage, exports micro-batches to ClickHouse, and scores post-trade wallet markout trajectories across 5-second, 30-second, and 60-second horizons.
+> **Phase 2 status:** See the [live integration, setup, and verification report](docs/phase2.md). The screenshots and performance discussion below describe the earlier synthetic prototype; they are not live exchange measurements. A browser WebSocket connection alone does not establish exchange feed health.
+
+PolyPulse is a working market-data pipeline and analytics terminal for binary prediction markets. It normalizes exchange messages into integer ticks, maintains books in C++20, journals events in SQLite WAL storage, exports batches to ClickHouse, and computes wallet markouts at 5, 30, and 60 seconds. Live operation and performance require further verification as recorded in the Phase 2 report.
 
 ---
 
@@ -128,16 +130,16 @@ Traditional Challenges in Prediction Market Data:
                                 ▼
         ┌───────────────────────────────────────────────────┐
         │                 PolyPulse Solution                │
-        │  • Canonical 10,000-tick fixed-point normalization │
+        │  • Canonical millionth-tick normalization          │
         │  • Self-healing watchdog & sequence gap recovery  │
-        │  • Sub-microsecond C++20 contiguous-vector engine │
+        │  • C++20 contiguous-vector orderbook engine        │
         │  • Local SQLite WAL journal + ClickHouse warehouse│
         │  • Null-safe 5s / 30s / 60s markout evaluation    │
         └───────────────────────────────────────────────────┘
 ```
 
-1. **Fragmented Feed Protocols**: Polymarket streams market data over public WebSockets without heartbeat sequence counters; Kalshi requires authenticated RSA-SHA256 headers with subscription-scoped sequence IDs (`sid`). PolyPulse provides a unified connector abstraction that shields downstream engines from exchange idiosyncrasies.
-2. **Incompatible Contract Representations**: Polymarket prices represent floating probability ($0.00$ to $1.00$); Kalshi represents cents or dollars with inverted pricing semantics ($P_{\text{ask}} = 1.00 - P_{\text{NO}}$). PolyPulse canonicalizes all price levels into fixed-point integer ticks ($10^4$ scale factor: 1 tick = \$0.0001).
+1. **Fragmented Feed Protocols**: Polymarket streams market data over public WebSockets without sequence counters; Kalshi requires authenticated Ed25519 or RSA signatures with subscription-scoped sequence IDs (`sid`). PolyPulse uses venue-specific parsers before updating books.
+2. **Incompatible Contract Representations**: Polymarket prices represent binary contract prices ($0.00$ to $1.00$); Kalshi YES asks are derived from NO bids ($P_{\text{ask}} = 1.00 - P_{\text{NO bid}}$). PolyPulse uses fixed-point integer ticks at a $10^6$ scale.
 3. **Silent WebSocket Dropouts & Packet Loss**: Public exchange sockets frequently hang without triggering standard TCP resets. PolyPulse embeds a 30-second silence watchdog with 10-second active `PING` keepalives and automated sequence gap recovery loops.
 4. **Adverse Selection & Wallet Profiling**: In high-velocity binary markets, liquidity providers must identify whether observed trade flow is informed (toxic) or uninformed (noise). PolyPulse solves this with automated post-trade markout evaluation using ClickHouse `LEFT ASOF JOIN` queries.
 
@@ -151,8 +153,8 @@ Traditional Challenges in Prediction Market Data:
 flowchart TD
     subgraph Venues ["1. Market Feeds"]
         PM["Polymarket CLOB<br/>(Public WebSocket)"]
-        KL["Kalshi Trade API v2<br/>(RSA-PSS Auth WebSocket)"]
-        PG["Polygon EVM Fills<br/>(Planned - Phase 9)"]
+        KL["Kalshi Trade API v2<br/>(Ed25519 / RSA Auth WebSocket)"]
+        PG["Polygon V2 Fills<br/>(confirmed RPC polling)"]
     end
 
     subgraph Ingestion ["2. Ingestion & Reliability Layer (Python AsyncIO)"]
@@ -250,33 +252,33 @@ sequenceDiagram
 ### 1. Multi-Venue Market Ingestion
 - **What it does**: Ingests real-time orderbook snapshots and incremental price-level deltas from Polymarket and Kalshi concurrently.
 - **Why it exists**: Fragmented liquidity requires traders to maintain multiple persistent connections with radically different protocols.
-- **How it works**: Uses Python AsyncIO connection tasks managed in a lifecycle context manager ([backend/main.py](file:///d:/PROJECTS/Polypulse/backend/main.py)). Kalshi requests are authenticated dynamically using RSA-PSS SHA-256 cryptographic signatures.
-- **Implementation**: [backend/connectors.py](file:///d:/PROJECTS/Polypulse/backend/connectors.py), [backend/normalizers.py](file:///d:/PROJECTS/Polypulse/backend/normalizers.py).
+- **How it works**: Uses Python AsyncIO connection tasks managed by the FastAPI lifecycle. Kalshi requests use Ed25519 or RSA-PSS signatures.
+- **Implementation**: [backend/live.py](backend/live.py), [backend/events.py](backend/events.py).
 
 ### 2. Self-Healing Data Pipeline
 - **What it does**: Automatically recovers from network disconnects, server resets, dropped frames, and sequence gaps.
 - **Why it exists**: If an incremental orderbook delta is dropped, the local orderbook silently drifts out of sync with exchange reality.
 - **How it works**: 
-  - A 30-second silence watchdog checks for feed activity, transmitting active 10-second `PING` frames.
+  - A Polymarket heartbeat watchdog sends `PING` frames and checks for `PONG`; stale market books are hidden.
   - A sequence tracker detects gaps ($\text{seq} > \text{prev} + 1$), increments telemetry counters, tears down the socket, and re-subscribes to force a fresh snapshot.
-  - A 10,000-element rolling SHA-256 digest queue filters duplicate packets.
-- **Implementation**: `reconnect()` and `kalshi()` loops in [backend/connectors.py](file:///d:/PROJECTS/Polypulse/backend/connectors.py).
+  - Deterministic event IDs and SQLite uniqueness prevent duplicate logical journal writes.
+- **Implementation**: [backend/live.py](backend/live.py), [backend/durable.py](backend/durable.py).
 
 ### 3. Unified C++20 Orderbook Engine
 - **What it does**: Maintains contiguous price levels, computes Top-of-Book quotes, and evaluates mathematical metrics.
 - **Why it exists**: Pure Python dictionaries or objects incur high interpreter overhead, heap fragmentation, and garbage collection pauses.
-- **How it works**: Implemented in C++20 using `std::vector<PriceLevel>`. Prices and quantities are 64-bit integers scaled by $10^4$. Updates run in $O(\log N)$ via `std::lower_bound`.
+- **How it works**: Implemented in C++20 using `std::vector<PriceLevel>`. Prices and quantities are 64-bit integers scaled by $10^6$. Level search uses `std::lower_bound`; insertion and deletion can move subsequent levels.
 - **Implementation**: [engine/include/orderbook.hpp](file:///d:/PROJECTS/Polypulse/engine/include/orderbook.hpp), [engine/src/orderbook.cpp](file:///d:/PROJECTS/Polypulse/engine/src/orderbook.cpp).
 
-### 4. AVX2-Accelerated Calculations
-- **What it does**: Vectorizes multi-depth VWAP calculations and price-level aggregations across SIMD registers.
+### 4. VWAP and Imbalance Calculations
+- **What it does**: Computes depth-weighted prices and bid/ask imbalance using scalar arithmetic.
 - **Current Status**: The current implementation utilizes scalar arithmetic with 80-bit extended precision (`long double`) in [engine/src/orderbook.cpp](file:///d:/PROJECTS/Polypulse/engine/src/orderbook.cpp). Hand-crafted AVX2 SIMD kernels (`_mm256_add_pd`, `_mm256_mul_pd`) are scheduled for Phase 10 / production hardening.
 - **Implementation Details**: See [docs/benchmarking.md](file:///d:/PROJECTS/Polypulse/docs/benchmarking.md).
 
 ### 5. Cross-Venue Spread Analytics
 - **What it does**: Computes real-time gross bid-ask spreads across verified equivalent market pairs.
 - **Why it exists**: Arbitrageurs and hedgers need instant visibility into gross mispricings between venues.
-- **How it works**: Maps verified contract IDs via `MARKET_PAIRS_JSON`, querying best bids and asks to compute `buy_polymarket_sell_kalshi` ($P^{\text{Kalshi}}_{\text{bid}} - P^{\text{Poly}}_{\text{ask}}$) and vice versa.
+- **How it works**: Reads operator-reviewed, unexpired pairs from the SQLite contract registry, then queries valid best bids and asks to compute `buy_polymarket_sell_kalshi` ($P^{\text{Kalshi}}_{\text{bid}} - P^{\text{Poly}}_{\text{ask}}$) and vice versa. Market titles alone never authorize a comparison.
 - **Implementation**: `MarketState.spreads()` in [backend/state.py](file:///d:/PROJECTS/Polypulse/backend/state.py).
 
 ### 6. Wallet Markout Scoring
@@ -290,11 +292,11 @@ sequenceDiagram
 ### 7. ClickHouse Time-Series Analytics
 - **What it does**: Provides high-throughput columnar storage for historical market events and snapshots.
 - **Why it exists**: Relational databases degrade when querying millions of high-frequency tick records.
-- **How it works**: An asynchronous exporter micro-batches unexported records from the SQLite WAL journal into ClickHouse `ReplacingMergeTree` and `MergeTree` tables using the HTTP `JSONEachRow` endpoint.
-- **Implementation**: [backend/storage.py](file:///d:/PROJECTS/Polypulse/backend/storage.py), [database/init.sql](file:///d:/PROJECTS/Polypulse/database/init.sql).
+- **How it works**: An asynchronous exporter sends bounded batches from the SQLite WAL journal into ClickHouse MergeTree-family tables using HTTP `JSONEachRow`. Analytical counts use unique event IDs because physical retry rows can coexist before merges.
+- **Implementation**: [backend/durable.py](backend/durable.py), [database/init.sql](database/init.sql).
 
 ### 8. Real-Time React 19 Terminal
-- **What it does**: Renders live orderbook depth, cross-venue scanner, wallet intelligence, and system diagnostics at 60 FPS.
+- **What it does**: Renders orderbook depth, cross-venue scanner, wallet intelligence, and system diagnostics with explicit demo/live status.
 - **Why it exists**: High-frequency WebSocket JSON parsing on the main browser thread causes interface jank.
 - **How it works**: Offloads stream parsing to an isolated Web Worker (`stream.worker.ts`), posting structured updates to the React state tree.
 - **Implementation**: [frontend/src/main.tsx](file:///d:/PROJECTS/Polypulse/frontend/src/main.tsx), [frontend/src/stream.worker.ts](file:///d:/PROJECTS/Polypulse/frontend/src/stream.worker.ts).
@@ -303,25 +305,36 @@ sequenceDiagram
 
 ## 6. Performance & Benchmarks
 
-> [!IMPORTANT]
-> **Zero Fabricated Claims**: PolyPulse does not publish estimated or unverified performance numbers. The metrics below are empirical measurements captured directly by the C++20 microbenchmark suite on host hardware.
+> [!NOTE]
+> **Phase 3 Empirical Verification:** All measurements below were captured directly from the C++20 microbenchmark harness on real hardware (AMD Ryzen 7 7735HS, GCC 16.2.0, `-std=c++20 -O3`) using a batched timing methodology ($200\text{ ops/batch} \times 5\,000\text{ batches} = 1\,000\,000\text{ operations per test}$) to eliminate the 100 ns clock quantization artifact on Windows. PolyPulse does not invent or fabricate benchmark figures.
 
-### Benchmark Measurements (Host x86-64, GCC 16.2 / C++20, `-O3`)
+### Phase 3 Engine Measurements
 
 | Target Operation | Throughput | p50 Latency | p95 Latency | p99 Latency | Avg Latency | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Incremental Level Update (`set_level`)** | **13.27M – 14.64M ops/sec** | **100.0 ns** | **100.0 ns** | **100 – 200 ns** | **68.3 – 75.4 ns** | **Active Implementation** |
-| **Combined Analytics (`vwap` + `imbalance`)** | **3.47M – 3.90M ops/sec** | **300.0 ns** | **300 – 400 ns** | **400 – 600 ns** | **260 – 288 ns** | **Active Implementation** |
-| **Red-Black Tree Comparison (`std::map`)** | 15.12M – 16.38M ops/sec | 100.0 ns | 100.0 ns | 100.0 ns | 61.0 – 66.1 ns | Comparison baseline |
-| **AVX2 Vectorized Calculations** | *Not benchmarked yet* | — | — | — | — | Planned (Phase 10) |
+| **In-Place Level Update (Flat Vector, 10-level book)** | **56.39M ops/sec** | **17.00 ns** | **27.00 ns** | **33.50 ns** | **17.73 ns** | **Active Implementation** |
+| **Level Updates (20-level depth)** | **54.01M ops/sec** | **16.50 ns** | **28.00 ns** | **35.00 ns** | **18.52 ns** | **Active Implementation** |
+| **Level Updates (50-level depth)** | **46.26M ops/sec** | **18.00 ns** | **36.00 ns** | **66.00 ns** | **21.62 ns** | **Active Implementation** |
+| **Insert + Delete Level (Flat Vector with memmove)** | **42.48M ops/sec** | **21.50 ns** | **42.00 ns** | **47.50 ns** | **23.54 ns** | **3.66x faster than `std::map`** |
+| **Insert + Delete Level (`std::map` with heap alloc)** | 11.60M ops/sec | 72.00 ns | 82.50 ns | 305.00 ns | 86.19 ns | Dynamic heap baseline |
+| **Full Snapshot Replacement (20 levels total)** | **7.28M ops/sec** | **155.00 ns** | **172.00 ns** | **356.00 ns** | **137.38 ns** | **Active Implementation** |
+| **Top-of-Book Quote Read (`front()` lookup)** | **281.24M ops/sec** | **3.00 ns** | **4.50 ns** | **6.00 ns** | **3.56 ns** | **Active Implementation** |
+| **Single-Lot VWAP (128-bit Integer Accumulator)** | **79.97M ops/sec** | **12.50 ns** | **17.00 ns** | **19.00 ns** | **12.51 ns** | **Active Implementation** |
+| **Batch VWAP (8 Lots - Scalar Baseline)** | **9.11M ops/sec** | **109.50 ns** | **140.00 ns** | **241.50 ns** | **109.74 ns** | Scalar fallback |
+| **Batch VWAP (8 Lots - AVX2 256-bit SIMD)** | **13.53M ops/sec** | **77.00 ns** | **91.50 ns** | **150.00 ns** | **73.92 ns** | **Active SIMD Kernel (1.48x speedup)** |
+| **Order Flow Imbalance (OFI + Cumulative Read)** | **934.93M ops/sec** | **1.00 ns** | **2.50 ns** | **3.00 ns** | **1.07 ns** | **Active Implementation** |
+| **Spread Analytics (Mid, Spread Ticks, Bps)** | **169.55M ops/sec** | **6.00 ns** | **8.00 ns** | **9.00 ns** | **5.90 ns** | **Active Implementation** |
+| **Cross-Venue Spread (2 Independent Books)**| **73.76M ops/sec** | **11.00 ns** | **20.50 ns** | **38.50 ns** | **13.56 ns** | **Active Implementation** |
 
-### Memory Footprint
-- **Static Memory per `OrderBook` instance**: **56 bytes** (stack size).
-- **Dynamic Heap Memory**: Contiguous vector capacity ($\approx 320\text{ bytes}$ for typical 20-level binary book).
+### Memory Footprint & Allocation Invariants
+- **Static Memory per `OrderBook` instance**: **112 bytes** (stack size).
+- **Struct Sizes**: `PriceLevel`: 16 bytes, `Quote`: 40 bytes, `SpreadAnalytics`: 48 bytes (padded), `CrossSpreadAnalytics`: 40 bytes.
+- **Dynamic Heap Memory**: 4,096 bytes pre-allocated on construction (`reserve(128)` levels per side $\times 16$ bytes $\times 2$ sides).
+- **Steady-State Allocations**: **ZERO** dynamic heap allocations during streaming tick updates or snapshot replacements within capacity $\le 128$ levels.
 - **Cache Locality**: 4 complete `PriceLevel` structs (16 bytes each) packed into a single 64-byte L1 CPU cache line.
 
 ### Reproducible Benchmark Command
-You can reproduce these exact measurements on your machine with a single command:
+You can reproduce these exact measurements on your machine with:
 
 ```powershell
 python scripts/benchmark.py
@@ -336,10 +349,22 @@ Post-trade markout evaluates execution quality by tracking midpoint trajectory a
 
 $$\text{Markout}(\Delta t) = \text{Direction} \times (P_{\text{mid}}(t + \Delta t) - P_{\text{exec}})$$
 
+$$\text{Markout (bps)} = \left( \frac{\text{Markout}(\Delta t)}{P_{\text{exec}}} \right) \times 10{,}000 \quad (P_{\text{exec}} > 0)$$
+
 Where:
 - $\text{Direction} = +1$ for **BUY** orders, $-1$ for **SELL** orders.
 - $P_{\text{exec}}$ is the execution price.
 - $P_{\text{mid}}(t + \Delta t) = \frac{\text{Best Bid}(t + \Delta t) + \text{Best Ask}(t + \Delta t)}{2}$.
+- Evaluated across standardized horizons: $\Delta t \in \{5\text{s}, 30\text{s}, 60\text{s}\}$.
+
+> [!IMPORTANT]
+> **Adverse Selection vs. Realized P&L**: Markout strictly measures post-trade market drift and adverse selection relative to execution price. It does **not** represent closed portfolio P&L, inventory carrying cost, or settlement payout.
+>
+> **Microstructure Validation Rules**:
+> 1. **Crossed / Locked Books**: Snapshots with $P_{\text{best\_ask}} \le P_{\text{best\_bid}}$ or quotes $\le 0$ are marked as `crossed` and rejected from midpoint calculations.
+> 2. **Observation Tolerance Window**: Midpoints are sampled within $[t_{\text{target}} - 0.5\text{s}, t_{\text{target}} + 5.0\text{s}]$. If no observation exists, status is `unavailable`. If timestamp latency $> 10\text{s}$, status is `stale`.
+> 3. **Zero Fabrication Invariant**: Public Polymarket CLOB and Kalshi feeds do **not** carry wallet addresses and are **never** fabricated. Wallet attribution is strictly derived from verified Polygon CTF Exchange V2 maker/taker logs and demo execution.
+> 4. **Ranking Guardrail**: Leaderboards enforce a minimum sample size threshold ($N_{\text{trades}} \ge 5$) so 1-trade noise does not dominate alpha rankings.
 
 <div align="center">
 <img src="docs/assets/markout-explanation.svg" alt="Markout Mathematics" width="90%">
@@ -351,11 +376,11 @@ Where:
 | :--- | :--- | :--- |
 | **Execution** | Buy 100 YES @ **\$0.5000** | Sell 50 YES @ **\$0.5200** |
 | **Future Mid at $t + 5\text{s}$** | \$0.5100 | \$0.5180 |
-| **5-Second Markout** | $+1 \times (0.5100 - 0.5000) = \mathbf{+1.00\text{¢}}$ | $-1 \times (0.5180 - 0.5200) = \mathbf{+0.20\text{¢}}$ |
+| **5-Second Markout** | $+1 \times (0.5100 - 0.5000) = \mathbf{+1.00\text{¢}\ (+200\text{ bps})}$ | $-1 \times (0.5180 - 0.5200) = \mathbf{+0.20\text{¢}\ (+38.5\text{ bps})}$ |
 | **Future Mid at $t + 30\text{s}$** | \$0.5250 | \$0.5420 |
-| **30-Second Markout** | $+1 \times (0.5250 - 0.5000) = \mathbf{+2.50\text{¢}}$ | $-1 \times (0.5420 - 0.5200) = \mathbf{-2.20\text{¢}}$ |
+| **30-Second Markout** | $+1 \times (0.5250 - 0.5000) = \mathbf{+2.50\text{¢}\ (+500\text{ bps})}$ | $-1 \times (0.5420 - 0.5200) = \mathbf{-2.20\text{¢}\ (-423.1\text{ bps})}$ |
 | **Future Mid at $t + 60\text{s}$** | \$0.4950 | \$0.5500 |
-| **60-Second Markout** | $+1 \times (0.4950 - 0.5000) = \mathbf{-0.50\text{¢}}$ | $-1 \times (0.5500 - 0.5200) = \mathbf{-3.00\text{¢}}$ |
+| **60-Second Markout** | $+1 \times (0.4950 - 0.5000) = \mathbf{-0.50\text{¢}\ (-100\text{ bps})}$ | $-1 \times (0.5500 - 0.5200) = \mathbf{-3.00\text{¢}\ (-576.9\text{ bps})}$ |
 
 ### Time-Series Alignment via ClickHouse `LEFT ASOF JOIN`
 ```sql
@@ -385,16 +410,22 @@ polypulse/
 │   │   └── config.yml             # Issue navigation & security links
 │   └── PULL_REQUEST_TEMPLATE.md   # PR validation & invariant checklist
 ├── backend/
+│   ├── analytics.py               # ClickHouse parameterized historical analytics client & telemetry
 │   ├── connectors.py              # Polymarket CLOB & Kalshi v2 WebSocket feeds + Demo generator
+│   ├── durable.py                 # SQLite WAL durable journal & micro-batch ClickHouse exporter
 │   ├── engine.py                  # Python ctypes bridge to C++20 shared library
+│   ├── events.py                  # Canonical millionth-tick event models and venue parsers
+│   ├── live.py                    # Production exchange connectors, watchdog, and REST reconciliation
+│   ├── logging_config.py          # Structured JSON logging and credential redaction
 │   ├── main.py                    # FastAPI application, REST endpoints, and WebSocket hubs
-│   ├── normalizers.py             # Venue payload normalization to 1/10,000 integer ticks
+│   ├── markout.py                 # Multi-horizon execution markout & adverse selection engine
+│   ├── polygon.py                 # Polygon V2 OrderFilled continuous poller and decoder
 │   ├── state.py                   # MarketState manager, spread scanner, and listener queues
-│   ├── storage.py                 # SQLite WAL durable journal & ClickHouse micro-batch exporter
+│   ├── wallet.py                  # Wallet attribution models, address normalization & maker/taker extraction
 │   ├── Dockerfile                 # Backend container definition
 │   └── __init__.py
 ├── database/
-│   └── init.sql                   # ClickHouse DDL (ReplacingMergeTree, MergeTree schemas)
+│   └── init.sql                   # ClickHouse DDL (ReplacingMergeTree, AggregatingMergeTree MVs, Codecs, TTLs)
 ├── docs/
 │   ├── api-reference.md           # Complete REST and WebSocket API specification
 │   ├── architecture.md            # System architecture and data flow documentation
@@ -404,6 +435,10 @@ polypulse/
 │   ├── ingestion-pipeline.md      # Protocol documentation for Polymarket & Kalshi feeds
 │   ├── markout-engine.md          # Markout mathematics, adverse selection, and null safety
 │   ├── orderbook-engine.md        # C++20 orderbook design, cache locality, and FFI bindings
+│   ├── phase2.md                  # Phase 2 live verification and closure report
+│   ├── phase3.md                  # Phase 3 C++20 orderbook engine audit & verification report
+│   ├── phase4.md                  # Phase 4 ClickHouse analytics architecture & verification report
+│   ├── phase5.md                  # Phase 5 Wallet intelligence & markout analytics architecture report
 │   ├── system-design.md           # Deep-dive trade-off analysis and quantitative constraints
 │   ├── testing.md                 # Testing strategy, verification commands, and test suites
 │   └── assets/                    # Animated SVG diagrams and genuine application screenshots
@@ -418,7 +453,7 @@ polypulse/
 │       └── orderbook_test.cpp     # Unit tests verifying C++ orderbook invariants
 ├── frontend/
 │   ├── src/
-│   │   ├── main.tsx               # React 19 trading terminal UI
+│   │   ├── main.tsx               # React 19 trading terminal UI & ClickHouse analytics view
 │   │   ├── stream.worker.ts       # Off-main-thread Web Worker JSON stream parser
 │   │   └── style.css              # Dark technical design tokens and layout styling
 │   ├── Dockerfile                 # Nginx frontend container definition
@@ -428,10 +463,15 @@ polypulse/
 │   ├── tsconfig.json              # TypeScript compilation configuration
 │   └── vite.config.ts             # Vite build pipeline
 ├── scripts/
-│   ├── benchmark.py               # Reproducible benchmark build and execution script
+│   ├── benchmark.py               # Reproducible C++ benchmark build and execution script
+│   ├── benchmark_clickhouse.py    # Automated ClickHouse analytics query benchmark suite
 │   └── build_engine.py            # C++ compiler build script for shared library and tests
 ├── tests/
-│   └── test_pipeline.py           # Python unittest suite for normalization and durability
+│   ├── test_clickhouse_analytics.py # ClickHouse schema, deduplication, and MV integration tests
+│   ├── test_phase2.py             # Live feeds, sequence gaps, and reconciliation tests
+│   ├── test_phase3.py             # C++20 orderbook FFI, AVX2 SIMD, and OFI tests
+│   ├── test_pipeline.py           # Python unittest suite for normalization and durability
+│   └── test_wallet_markout.py     # Wallet attribution, maker/taker, and markout analytics tests
 ├── .dockerignore                  # Docker build context exclusion rules
 ├── .env.example                   # Annotated environment variable configuration template
 ├── .gitignore                     # Git tracking exclusions
@@ -513,12 +553,20 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 | `GET` | `/api/v1/markets/{market_id}/orderbook` | Get full orderbook price-level ladder | `venue=polymarket\|kalshi` |
 | `GET` | `/api/v1/markets/{market_id}/spread` | Get spread for specific verified pair | — |
 | `GET` | `/api/v1/spreads` | List all verified cross-venue spreads | — |
+| `GET` | `/api/v1/contracts` | List operator-reviewed contract pairs | — |
+| `PUT` | `/api/v1/contracts` | Save contract review *(Operator authenticated)* | `X-Operator-Key` header, JSON pair review |
+| `DELETE` | `/api/v1/contracts/{poly_id}/{ticker}` | Remove contract review *(Operator authenticated)* | `X-Operator-Key` header |
 | `GET` | `/api/v1/health` | Feed status, journal stats, sequence counters | — |
 | `GET` | `/api/v1/metrics` | System diagnostic metrics (aliased to health) | — |
 | `POST` | `/api/v1/trades` | Ingest trade execution *(Demo mode only)* | JSON: `trade_id`, `wallet`, `venue`, `price`, etc. |
-| `GET` | `/api/v1/trades` | List observed trade executions | — |
-| `GET` | `/api/v1/wallets` | List tracked wallets & trade counts | — |
-| `GET` | `/api/v1/wallets/{address}/markouts` | Evaluate 5s, 30s, 60s post-trade markout | `horizon=5\|30\|60`, `venue`, `market_id` |
+| `GET` | `/api/v1/trades` | List observed trade executions & maker fills | — |
+| `GET` | `/api/v1/wallets` | List tracked wallets, trade counts & attribution split | — |
+| `GET` | `/api/v1/wallets/{address}` | Wallet profile (first/last seen, total volume, notional) | — |
+| `GET` | `/api/v1/wallets/{address}/trades` | Paginated wallet executions with maker/taker attribution | `limit`, `offset`, `venue`, `market_id` |
+| `GET` | `/api/v1/wallets/{address}/markouts` | Multi-horizon markout analysis (5s, 30s, 60s) in $ and bps | `horizon=5\|30\|60`, `venue`, `market_id` |
+| `GET` | `/api/v1/wallets/{address}/performance` | Detailed side breakdown (Buy vs. Sell) and drift metrics | `calc_version` |
+| `GET` | `/api/v1/analytics/wallet-rankings` | Leaderboard ranked by avg markout bps with $N \ge 5$ guardrail | `horizon=5\|30\|60`, `min_trades`, `limit` |
+| `GET` | `/api/v1/analytics/markout-distribution` | Microstructure adverse selection quantiles (P10–P90) | `horizon=5\|30\|60`, `venue`, `market_id` |
 
 ### WebSocket Streams
 
@@ -533,20 +581,29 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 
 ## 11. Testing & Verification
 
-PolyPulse includes automated test suites across all layers:
+PolyPulse includes automated test suites across all layers (72 tests passing):
 
 ```powershell
 # 1. C++ Engine Unit Tests
 python scripts/build_engine.py --test
 
-# 2. Python Pipeline & Normalization Tests
+# 2. Python Test Suite (All 72 tests across live feeds, C++ FFI, ClickHouse & Markouts)
 python -m unittest discover -s tests -v
 
-# 3. Frontend TypeScript Typecheck & Production Build
-cd frontend; npm run build; cd ..
+# 3. Wallet Intelligence & Markout Analytics Tests (23 tests)
+python -m unittest tests/test_wallet_markout.py -v
 
-# 4. Microbenchmark Suite Execution
+# 4. ClickHouse Analytics Integration Tests (14 tests)
+python -m unittest tests/test_clickhouse_analytics.py -v
+
+# 5. Frontend TypeScript Typecheck & Production Build
+npm --prefix frontend run build
+
+# 6. C++20 Orderbook Microbenchmark Suite
 python scripts/benchmark.py
+
+# 7. ClickHouse Analytics Query Benchmark
+python scripts/benchmark_clickhouse.py
 ```
 
 *Complete test documentation: [docs/testing.md](docs/testing.md).*
@@ -560,25 +617,25 @@ python scripts/benchmark.py
 </div>
 
 - [x] **Phase 1: MVP Foundation** — FastAPI AsyncIO core, project scaffolding, base models.
-- [x] **Phase 2: Live Market Data Integration** — Polymarket CLOB, Kalshi RSA-auth WebSocket v2, synthetic simulator.
-- [x] **Phase 3: C++ Performance Engine** — Contiguous array orderbook, zero-alloc VWAP & OFI, C ctypes bridge.
-- [x] **Phase 4: ClickHouse Analytics** — SQLite WAL durable local journal + asynchronous micro-batch HTTP exporter.
-- [x] **Phase 5: Wallet Markout Engine** — Post-trade adverse selection scoring across 5s/30s/60s with null safety.
-- [x] **Phase 6: Cross-Venue Intelligence** — Verified pair registry matching and gross quote spread scanner.
-- [x] **Phase 7: React 19 Terminal** — Real-time orderbook ladder, Web Worker stream parsing, dark technical UI.
+- [x] **Phase 2: Live Market Data Integration** — Polymarket WS + REST reconciliation verified; Polygon continuous poller verified; ClickHouse outage replay verified; Kalshi auth & gap recovery verified via offline fixtures (live feed unverified due to missing account credentials). See [Phase 2 Closure Report](docs/phase2.md).
+- [x] **Phase 3: C++20 Performance Engine & Microstructure** — Contiguous preallocated vector orderbook (56.39M level updates/sec, 42.48M insert/delete ops/sec, 3.66x faster than `std::map`), 128-bit integer VWAP (79.97M ops/sec), Cont-Kukanov-Stoikov (2014) OFI tracking (934.93M ops/sec), spread analytics (169.55M ops/sec), AVX2 SIMD vectorized batch VWAP kernel (13.53M ops/sec, 1.48x speedup), and C ctypes bridge. See [Phase 3 Report](docs/phase3.md).
+- [x] **Phase 4: ClickHouse Analytics Infrastructure** — ReplacingMergeTree operational tables with DoubleDelta, T64, and ZSTD codecs; AggregatingMergeTree Materialized Views (`trade_candles_1m`, `book_summary_1m`, `venue_event_stats_10s`); dual-defense deduplication (deterministic SHA-256 batch tokens + `trades FINAL` query layer) verified via 14-step audit; 4.9x row scan reduction with 2.3x server execution speedup at scale; parameterized FastAPI analytics API; React terminal historical analytics dashboard with storage telemetry. See [Phase 4 Report](docs/phase4.md).
+- [x] **Phase 5: Wallet Intelligence & Markout Analytics Engine** — Verified wallet attribution for Polygon CTF V2 maker/taker fills and synthetic demo execution (zero-fabrication guarantee for public CLOB feeds); 5s, 30s, and 60s post-trade adverse selection markout math in $ and basis points; microstructure rejection of crossed/locked books; calculation versioning (`v1.0`); ClickHouse `wallet_trades` and `trade_markouts` ReplacingMergeTree tables; minimum sample size ($N \ge 5$) ranking guardrail; interactive React terminal workspace with wallet leaderboard, drift breakdown, and adverse selection quantiles. See [Phase 5 Report](docs/phase5.md).
+- [x] **Phase 6: Cross-Venue Intelligence** — Verified pair registry matching, operator authentication, and gross quote spread scanner.
+- [x] **Phase 7: React 19 Terminal** — Real-time orderbook ladder, Web Worker stream parsing, dark technical UI, and ClickHouse analytics view.
 - [ ] **Phase 8: Distributed Systems Reliability** *(In Progress)* — Multi-region silence watchdog, automated reconnect jitter, recovery stress testing.
-- [ ] **Phase 9: Production Hardening** *(Planned)* — Polygon on-chain fill decoding, automated contract term verification, API token authentication.
-- [ ] **Phase 10: Multi-Venue Simulation & AVX2** *(Planned)* — AVX2 SIMD vectorized batch VWAP kernels, multi-node ClickHouse cluster deployment.
+- [ ] **Phase 9: Production Hardening** *(In Progress)* — Authenticated contract review landed; continuous Polygon poller verified; awaiting Kalshi live credentials.
+- [ ] **Phase 10: Multi-Venue Simulation & Distributed Cluster** *(Planned)* — Multi-node ClickHouse cluster deployment and historical cross-exchange replay simulator.
 
 ---
 
 ## 13. Engineering Decisions
 
 ### Why C++20?
-Binary prediction markets require deterministic orderbook updates. Python's dynamic object model incurs memory allocation and interpreter overhead. C++20 provides contiguous memory cache locality (`std::vector<PriceLevel>`), predictable L1 cache line loading, sub-microsecond point lookups via `std::lower_bound`, and zero-allocation top-of-book reads.
+Binary prediction markets require deterministic orderbook updates. The C++20 engine stores sorted price levels in contiguous `std::vector<PriceLevel>` arrays and uses integer ticks. Its Phase 2 latency has not been benchmarked.
 
 ### Why ClickHouse?
-Evaluating post-trade markouts over millions of historical market observations requires high-throughput columnar scanning. ClickHouse's `ReplacingMergeTree` deduplicates retried micro-batches automatically, while its native `LEFT ASOF JOIN` aligns trade executions with future market snapshots in linear time without memory-exhausting subqueries.
+ClickHouse stores event and book history for analytical queries. `ReplacingMergeTree` merges retried rows asynchronously within monthly partitions. Single-node instances require `non_replicated_deduplication_window=1000` for block deduplication, while the analytical layer queries `trades FINAL` with `uniqExact(event_id)` and deterministic tie-breaking `argMin/argMax(price, (received_timestamp, event_id))` to eliminate duplicate delivery vulnerabilities across arbitrary retry groupings.
 
 ### Why Python AsyncIO?
 WebSocket feeds require lightweight non-blocking event loops capable of handling dozens of concurrent venue streams, timeouts, and pings without thread context switching overhead. Python AsyncIO excels at network I/O orchestration while delegating compute-heavy book operations to C++.
@@ -587,10 +644,10 @@ WebSocket feeds require lightweight non-blocking event loops capable of handling
 Directly streaming market events to a remote database risks event loss during network interruptions. SQLite running in Write-Ahead Log (`WAL`) mode serves as an in-process, zero-configuration local journal, acting as both an immediate durability guarantee and an offline replay source.
 
 ### Why Web Workers in the React Terminal?
-WebSocket market data feeds can emit dozens of messages per second during volatile periods. Parsing JSON strings and validating schemas on the main JavaScript thread blocks the browser's render loop, causing visible frame drops. Offloading stream deserialization to `stream.worker.ts` guarantees silky 60 FPS terminal interaction.
+WebSocket market data feeds can emit many messages during volatile periods. The terminal parses messages in `stream.worker.ts` to reduce main-thread work; frame rate has not been measured.
 
 ### Why Fixed-Point Integer Ticks?
-Floating-point representations (e.g. `0.5100000000000001`) create non-deterministic rounding errors across C++, Python, and ClickHouse. Scaling all prices and quantities by $10^4$ eliminates floating-point drift and guarantees exact mathematical equality in spread and markout comparisons.
+Floating-point representations (e.g. `0.5100000000000001`) can cause rounding differences. Scaling book prices and quantities by $10^6$ gives exact equality for values with up to six decimal places inside the engine. Displayed spreads and markouts still use floating-point calculations.
 
 ---
 

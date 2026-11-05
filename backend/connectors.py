@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
 from backend.normalizers import kalshi_delta, kalshi_snapshot, poly_messages
+from backend.engine import PRICE_SCALE, QUANTITY_SCALE
 
 LOG = logging.getLogger(__name__)
 POLY_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -162,8 +163,8 @@ async def demo(state):
             key = (venue, market)
             seq[key] = 1
             center = mid + offset
-            bids = [(center-50-i*50, (20+i*8)*10_000) for i in range(10)]
-            asks = [(center+50+i*50, (18+i*7)*10_000) for i in range(10)]
+            bids = [((center-50-i*50)*100, (20+i*8)*QUANTITY_SCALE) for i in range(10)]
+            asks = [((center+50+i*50)*100, (18+i*7)*QUANTITY_SCALE) for i in range(10)]
             state.snapshot(venue, market, bids, asks, 1)
     for index, (_, poly, kalshi_id, mid) in enumerate(pairs):
         state.journal.add_trade({"trade_id": f"demo-{uuid.uuid4().hex}",
@@ -181,8 +182,8 @@ async def demo(state):
         view = state.get(venue, market)
         side = rng.choice(["bid", "ask"])
         levels = view["bids"] if side == "bid" else view["asks"]
-        price = round(rng.choice(levels)[0] * 10_000)
-        quantity = rng.randint(8, 100) * 10_000
+        price = round(rng.choice(levels)[0] * PRICE_SCALE)
+        quantity = rng.randint(8, 100) * QUANTITY_SCALE
         seq[key] += 1
         state.level(venue, market, side, price, quantity, seq[key])
         if ticks % 8 == 0:

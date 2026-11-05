@@ -1,5 +1,6 @@
 # Python & Environments
 .venv/
+.deps/
 venv/
 ENV/
 env/
