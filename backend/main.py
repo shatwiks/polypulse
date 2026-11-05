@@ -11,9 +11,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Security, We
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Optional
 from dotenv import load_dotenv
 
 from backend.connectors import demo
@@ -25,6 +25,7 @@ from backend.analytics import ClickHouseAnalytics
 from backend.wallet import normalize_address
 from backend.markout import CURRENT_CALC_VERSION
 from backend.logging_config import configure_logging
+from backend.scanner import validate_contract_compatibility
 
 configure_logging()
 load_dotenv()
@@ -120,25 +121,76 @@ async def spread(market_id: str):
 
 
 @app.get("/api/v1/spreads")
-async def spreads():
-    return state().spreads()
+async def spreads(opportunities_only: bool = Query(False, description="Filter for positive arbitrage opportunities only")):
+    return state().spreads(opportunities_only=opportunities_only)
+
+
+@app.get("/api/v1/spreads/opportunities")
+async def spread_opportunities():
+    return state().spreads(opportunities_only=True)
 
 
 class ContractPairIn(BaseModel):
     polymarket_asset_id: str = Field(min_length=1, max_length=120)
     kalshi_ticker: str = Field(min_length=1, max_length=120)
-    event_description: str = Field(min_length=1, max_length=500)
-    outcome_equivalence: str = Field(min_length=1, max_length=1000)
+    canonical_event: str = Field(default="", max_length=500)
+    canonical_outcome: str = Field(default="", max_length=500)
+    event_description: str = Field(default="", max_length=500)
+    outcome_equivalence: str = Field(default="", max_length=1000)
+    equivalence_mapping: Literal["direct", "inverse"] = "direct"
     resolution_source: str = Field(min_length=1, max_length=500)
+    resolution_criteria: str = Field(default="", max_length=2000)
+    polymarket_expiration: Optional[datetime] = None
+    kalshi_expiration: Optional[datetime] = None
     expiration: datetime
-    verification_status: Literal["unverified", "verified", "rejected"] = "unverified"
+    settlement_details: str = Field(default="", max_length=2000)
+    verification_status: Literal["unverified", "verified", "rejected", "incompatible", "expired"] = "unverified"
+    reviewer: str = Field(default="", max_length=120)
+    verified_at: Optional[datetime] = None
 
-    @field_validator("expiration")
+    @field_validator("expiration", "polymarket_expiration", "kalshi_expiration")
     @classmethod
     def require_timezone(cls, value):
-        if value.tzinfo is None or value.utcoffset() is None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise ValueError("expiration needs a timezone")
-        return value.astimezone(timezone.utc)
+        return value.astimezone(timezone.utc) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_semantics(self):
+        # Bi-directional fallback between legacy and canonical fields
+        if not self.canonical_event and self.event_description:
+            self.canonical_event = self.event_description
+        if not self.event_description and self.canonical_event:
+            self.event_description = self.canonical_event
+        if not self.canonical_outcome and self.outcome_equivalence:
+            self.canonical_outcome = self.outcome_equivalence
+        if not self.outcome_equivalence and self.canonical_outcome:
+            self.outcome_equivalence = self.canonical_outcome
+
+        # Strict checks if marking as verified
+        if self.verification_status == "verified":
+            if not self.reviewer.strip():
+                raise ValueError("Verified contract pairs require an explicit reviewer identity")
+            if not self.resolution_source.strip():
+                raise ValueError("Verified contract pairs require an authoritative resolution source")
+            if self.expiration <= datetime.now(timezone.utc):
+                raise ValueError("Cannot verify an already expired contract pair")
+            if not self.canonical_event.strip():
+                raise ValueError("Verified contract pairs require a canonical event specification")
+            if not self.verified_at:
+                self.verified_at = datetime.now(timezone.utc)
+        return self
+
+
+class ContractVerifyIn(BaseModel):
+    polymarket_asset_id: str
+    kalshi_ticker: str
+    verification_status: Literal["verified", "rejected", "incompatible", "unverified"]
+    reviewer: str = Field(min_length=1, max_length=120)
+    equivalence_mapping: Optional[Literal["direct", "inverse"]] = None
+    resolution_criteria: Optional[str] = None
+    settlement_details: Optional[str] = None
+    notes: Optional[str] = None
 
 
 operator_key_header = APIKeyHeader(name="X-Operator-Key", auto_error=False)
@@ -162,14 +214,58 @@ def verify_operator_access(
 
 
 @app.get("/api/v1/contracts")
-async def contracts():
-    return state().journal.contract_pairs()
+async def contracts(status: Optional[str] = Query(None, description="Filter by status: verified, unverified, rejected, incompatible, expired, all")):
+    return state().journal.contract_pairs(status=status)
+
+
+@app.get("/api/v1/contracts/{polymarket_asset_id}/{kalshi_ticker}")
+async def get_contract(polymarket_asset_id: str, kalshi_ticker: str):
+    pair = state().journal.get_contract_pair(polymarket_asset_id, kalshi_ticker)
+    if not pair:
+        raise HTTPException(404, "Contract pair unavailable")
+    return pair
 
 
 @app.put("/api/v1/contracts", dependencies=[Depends(verify_operator_access)])
 async def save_contract(pair: ContractPairIn):
-    state().journal.save_contract_pair(pair.model_dump(mode="json"))
+    payload = pair.model_dump(mode="json")
+    state().journal.save_contract_pair(payload)
     return {"saved": True, "verification_status": pair.verification_status}
+
+
+@app.post("/api/v1/contracts/verify", dependencies=[Depends(verify_operator_access)])
+async def verify_contract(req: ContractVerifyIn):
+    journal = state().journal
+    pair = journal.get_contract_pair(req.polymarket_asset_id, req.kalshi_ticker)
+    if not pair:
+        raise HTTPException(404, "Contract pair not found")
+
+    if req.verification_status == "verified":
+        # Check expiration
+        exp_str = pair.get("expiration")
+        if exp_str:
+            try:
+                exp_dt = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                if exp_dt <= datetime.now(timezone.utc):
+                    raise HTTPException(400, "Cannot verify an already expired contract pair")
+            except Exception as exc:
+                raise HTTPException(400, f"Invalid expiration date: {exc}")
+
+    pair["verification_status"] = req.verification_status
+    pair["reviewer"] = req.reviewer
+    if req.equivalence_mapping:
+        pair["equivalence_mapping"] = req.equivalence_mapping
+    if req.resolution_criteria:
+        pair["resolution_criteria"] = req.resolution_criteria
+    if req.settlement_details:
+        pair["settlement_details"] = req.settlement_details
+    if req.verification_status == "verified":
+        pair["verified_at"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    else:
+        pair["verified_at"] = None
+
+    journal.save_contract_pair(pair)
+    return {"verified": True, "verification_status": req.verification_status, "reviewer": req.reviewer}
 
 
 @app.delete("/api/v1/contracts/{polymarket_asset_id}/{kalshi_ticker}", dependencies=[Depends(verify_operator_access)])

@@ -275,11 +275,19 @@ sequenceDiagram
 - **Current Status**: The current implementation utilizes scalar arithmetic with 80-bit extended precision (`long double`) in [engine/src/orderbook.cpp](file:///d:/PROJECTS/Polypulse/engine/src/orderbook.cpp). Hand-crafted AVX2 SIMD kernels (`_mm256_add_pd`, `_mm256_mul_pd`) are scheduled for Phase 10 / production hardening.
 - **Implementation Details**: See [docs/benchmarking.md](file:///d:/PROJECTS/Polypulse/docs/benchmarking.md).
 
-### 5. Cross-Venue Spread Analytics
-- **What it does**: Computes real-time gross bid-ask spreads across verified equivalent market pairs.
-- **Why it exists**: Arbitrageurs and hedgers need instant visibility into gross mispricings between venues.
-- **How it works**: Reads operator-reviewed, unexpired pairs from the SQLite contract registry, then queries valid best bids and asks to compute `buy_polymarket_sell_kalshi` ($P^{\text{Kalshi}}_{\text{bid}} - P^{\text{Poly}}_{\text{ask}}$) and vice versa. Market titles alone never authorize a comparison.
-- **Implementation**: `MarketState.spreads()` in [backend/state.py](file:///d:/PROJECTS/Polypulse/backend/state.py).
+### 5. Cross-Venue Intelligence & Arbitrage Scanner
+- **What it does**: Computes real-time cross-venue bid-ask spreads, executable depth, and riskless arbitrage opportunities across operator-verified contract pairs.
+- **Why it exists**: Fragmented binary liquidity across Polymarket and Kalshi creates recurring mispricings, but naive title matching leads to severe basis risk and phantom arbitrage.
+- **Phase 6 Implementation Highlights**:
+  - **Seven-Dimension Contract Registry**: Stores Polymarket asset/token ID, Kalshi ticker, canonical event and outcome, equivalence mapping, resolution criteria and source, expiration and settlement details, verification status, reviewer identity, and review timestamp.
+  - **Zero Title-Only Matching Invariant**: Strictly rejects automated string similarity matching; require explicit comparison of authoritative settlement conditions.
+  - **Dual Equivalence Topologies**:
+    - **Direct Mapping** ($Poly_{\text{YES}} \equiv Kalshi_{\text{YES}}$): Long Poly / Short Kalshi ($P^{\text{kalshi}}_{\text{bid}} - P^{\text{poly}}_{\text{ask}}$) and Long Kalshi / Short Poly ($P^{\text{poly}}_{\text{bid}} - P^{\text{kalshi}}_{\text{ask}}$).
+    - **Inverse Mapping** ($Poly_{\text{YES}} \equiv Kalshi_{\text{NO}}$): Negative-risk Mint Arbitrage ($1.00 - [P^{\text{poly}}_{\text{ask}} + P^{\text{kalshi}}_{\text{ask}}]$) and Merge Arbitrage ($[P^{\text{poly}}_{\text{bid}} + P^{\text{kalshi}}_{\text{bid}}] - 1.00$).
+  - **Executable Depth & Fee Haircuts**: Evaluates top-of-book capacity ($\min(Q_1, Q_2)$), notional limits, and net spreads after Kalshi and Polymarket taker fee schedules.
+  - **Strict Scanner Gating**: Only pairs with `verification_status == 'verified'` enter the executable scanner; unverified, rejected, expired, or crossed-book pairs are strictly excluded.
+  - **Operator Authentication**: Preserves header-based (`X-Operator-Key`) and Bearer token authentication on all mutating endpoints (`PUT /contracts`, `POST /verify`, `DELETE`).
+- **Implementation & Specifications**: [backend/scanner.py](backend/scanner.py), [backend/state.py](backend/state.py), and [docs/phase6.md](docs/phase6.md).
 
 ### 6. Wallet Markout Scoring & Microstructure Audit
 - **What it does**: Evaluates adverse selection on executed trades by comparing execution price to subsequent market midpoints across 5s, 30s, and 60s observation horizons.
@@ -588,22 +596,25 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 
 ## 11. Testing & Verification
 
-PolyPulse includes automated test suites across all layers (77 tests passing):
+PolyPulse includes automated test suites across all layers (88 tests passing):
 
 ```powershell
 # 1. C++ Engine Unit Tests
 python scripts/build_engine.py --test
 
-# 2. Python Test Suite (All 77 tests across live feeds, C++ FFI, ClickHouse & Markouts)
+# 2. Python Test Suite (All 88 tests across live feeds, C++ FFI, ClickHouse, Markouts & Cross-Venue)
 python -m unittest discover -s tests -v
 
-# 3. Wallet Intelligence & Markout Analytics Tests (28 tests)
+# 3. Cross-Venue Intelligence & Arbitrage Scanner Tests (11 tests)
+python -m unittest tests/test_cross_venue.py -v
+
+# 4. Wallet Intelligence & Markout Analytics Tests (28 tests)
 python -m unittest tests/test_wallet_markout.py -v
 
-# 4. ClickHouse Analytics Integration Tests (16 tests)
+# 5. ClickHouse Analytics Integration Tests (16 tests)
 python -m unittest tests/test_clickhouse_analytics.py -v
 
-# 5. Frontend TypeScript Typecheck & Production Build
+# 6. Frontend TypeScript Typecheck & Production Build
 npm --prefix frontend run build
 
 # 6. C++20 Orderbook Microbenchmark Suite
@@ -628,7 +639,7 @@ python scripts/benchmark_clickhouse.py
 - [x] **Phase 3: C++20 Performance Engine & Microstructure** — Contiguous preallocated vector orderbook (56.39M level updates/sec, 42.48M insert/delete ops/sec, 3.66x faster than `std::map`), 128-bit integer VWAP (79.97M ops/sec), Cont-Kukanov-Stoikov (2014) OFI tracking (934.93M ops/sec), spread analytics (169.55M ops/sec), AVX2 SIMD vectorized batch VWAP kernel (13.53M ops/sec, 1.48x speedup), and C ctypes bridge. See [Phase 3 Report](docs/phase3.md).
 - [x] **Phase 4: ClickHouse Analytics Infrastructure** — ReplacingMergeTree operational tables with DoubleDelta, T64, and ZSTD codecs; AggregatingMergeTree Materialized Views (`trade_candles_1m`, `book_summary_1m`, `venue_event_stats_10s`); dual-defense deduplication (deterministic SHA-256 batch tokens + `trades FINAL` query layer) verified via 14-step audit; 4.9x row scan reduction with 2.3x server execution speedup at scale; parameterized FastAPI analytics API; React terminal historical analytics dashboard with storage telemetry. See [Phase 4 Report](docs/phase4.md).
 - [x] **Phase 5: Wallet Intelligence & Markout Analytics Engine** — Verified wallet attribution for Polygon CTF V2 maker/taker fills and synthetic demo execution (zero-fabrication guarantee for public CLOB feeds); 5s, 30s, and 60s post-trade adverse selection markout math in $ and basis points; microstructure rejection of crossed/locked books; calculation versioning (`v1.0`); ClickHouse `wallet_trades` and `trade_markouts` ReplacingMergeTree tables; minimum sample size ($N \ge 5$) ranking guardrail; interactive React terminal workspace with wallet leaderboard, drift breakdown, and adverse selection quantiles. See [Phase 5 Report](docs/phase5.md).
-- [x] **Phase 6: Cross-Venue Intelligence** — Verified pair registry matching, operator authentication, and gross quote spread scanner.
+- [x] **Phase 6: Cross-Venue Intelligence** — Operator-reviewed 7-dimension contract registry, direct and inverse outcome mapping, negative-risk mint and merge arbitrage mathematics, executable depth and fee haircut modeling, and strict scanner gating. See [Phase 6 Report](docs/phase6.md).
 - [x] **Phase 7: React 19 Terminal** — Real-time orderbook ladder, Web Worker stream parsing, dark technical UI, and ClickHouse analytics view.
 - [ ] **Phase 8: Distributed Systems Reliability** *(In Progress)* — Multi-region silence watchdog, automated reconnect jitter, recovery stress testing.
 - [ ] **Phase 9: Production Hardening** *(In Progress)* — Authenticated contract review landed; continuous Polygon poller verified; awaiting Kalshi live credentials.

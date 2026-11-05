@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from backend.engine import Book, PRICE_SCALE, QUANTITY_SCALE
 from backend.events import price_ticks, quantity_units
+from backend.scanner import compute_cross_venue_spread
 
 LOG = logging.getLogger(__name__)
 
@@ -111,21 +112,18 @@ class MarketState:
     def markets(self):
         return [self.get(*key) for key in sorted(self.books)]
 
-    def spreads(self):
+    def spreads(self, opportunities_only=False):
         result = []
+        now_dt = datetime.now(timezone.utc)
         for pair in self.journal.contract_pairs(verified_only=True):
-            if datetime.fromisoformat(pair["expiration"]) <= datetime.now(timezone.utc):
-                continue
             left = self.get("polymarket", pair["polymarket_asset_id"])
             right = self.get("kalshi", pair["kalshi_ticker"])
-            if not left or not right or not left["valid"] or not right["valid"]:
+            spread_data = compute_cross_venue_spread(pair, left, right, now_dt=now_dt)
+            if spread_data is None:
                 continue
-            buy_poly = right["best_bid"] - left["best_ask"] if right["best_bid"] is not None and left["best_ask"] is not None else None
-            buy_kalshi = left["best_bid"] - right["best_ask"] if left["best_bid"] is not None and right["best_ask"] is not None else None
-            result.append({"name": pair["event_description"], "polymarket": left, "kalshi": right,
-                           "buy_polymarket_sell_kalshi": buy_poly,
-                           "buy_kalshi_sell_polymarket": buy_kalshi,
-                           "note": "Gross quote difference before fees, depth and settlement risk"})
+            if opportunities_only and not spread_data.get("is_arbitrage"):
+                continue
+            result.append(spread_data)
         return result
 
     def _record(self, venue, market_id, kind, sequence, raw, book):

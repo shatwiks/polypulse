@@ -194,6 +194,22 @@ class DurableJournal(Journal):
             if col_name not in cols_tm:
                 self.db.execute(f"ALTER TABLE trade_markouts ADD COLUMN {col_name} {col_def}")
 
+        # Phase 6: Contract matching and cross-venue intelligence column migrations
+        cols_cp = [r[1] for r in self.db.execute("PRAGMA table_info(contract_pairs)").fetchall()]
+        for col_name, col_def in [
+            ("canonical_event", "TEXT DEFAULT ''"),
+            ("canonical_outcome", "TEXT DEFAULT ''"),
+            ("equivalence_mapping", "TEXT DEFAULT 'direct'"),
+            ("resolution_criteria", "TEXT DEFAULT ''"),
+            ("polymarket_expiration", "TEXT DEFAULT ''"),
+            ("kalshi_expiration", "TEXT DEFAULT ''"),
+            ("settlement_details", "TEXT DEFAULT ''"),
+            ("reviewer", "TEXT DEFAULT ''"),
+            ("verified_at", "TEXT"),
+        ]:
+            if col_name not in cols_cp:
+                self.db.execute(f"ALTER TABLE contract_pairs ADD COLUMN {col_name} {col_def}")
+
         self.db.commit()
 
     def event(self, event):
@@ -691,26 +707,104 @@ class DurableJournal(Journal):
         self.db.execute("INSERT INTO checkpoints VALUES(?,?) ON CONFLICT(source) DO UPDATE SET value=excluded.value", (source, value))
         self.db.commit()
 
-    def contract_pairs(self, verified_only=False):
+    def contract_pairs(self, verified_only=False, status=None):
         query = "SELECT * FROM contract_pairs"
+        clauses = []
+        params = []
         if verified_only:
-            query += " WHERE verification_status='verified'"
+            clauses.append("verification_status='verified'")
+        elif status and status != "all":
+            clauses.append("verification_status=?")
+            params.append(status)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY updated_at DESC"
-        return [dict(row) for row in self.db.execute(query)]
+        rows = [dict(row) for row in self.db.execute(query, params)]
+        for r in rows:
+            if not r.get("canonical_event"):
+                r["canonical_event"] = r.get("event_description", "")
+            if not r.get("canonical_outcome"):
+                r["canonical_outcome"] = r.get("outcome_equivalence", "")
+            if not r.get("event_description"):
+                r["event_description"] = r.get("canonical_event", "")
+            if not r.get("outcome_equivalence"):
+                r["outcome_equivalence"] = r.get("canonical_outcome", "")
+            if not r.get("equivalence_mapping"):
+                r["equivalence_mapping"] = "direct"
+        return rows
+
+    def get_contract_pair(self, polymarket_asset_id, kalshi_ticker):
+        row = self.db.execute(
+            "SELECT * FROM contract_pairs WHERE polymarket_asset_id=? AND kalshi_ticker=?",
+            (polymarket_asset_id, kalshi_ticker)
+        ).fetchone()
+        if not row:
+            return None
+        r = dict(row)
+        if not r.get("canonical_event"):
+            r["canonical_event"] = r.get("event_description", "")
+        if not r.get("canonical_outcome"):
+            r["canonical_outcome"] = r.get("outcome_equivalence", "")
+        if not r.get("event_description"):
+            r["event_description"] = r.get("canonical_event", "")
+        if not r.get("outcome_equivalence"):
+            r["outcome_equivalence"] = r.get("canonical_outcome", "")
+        if not r.get("equivalence_mapping"):
+            r["equivalence_mapping"] = "direct"
+        return r
 
     def save_contract_pair(self, pair):
-        self.db.execute("""INSERT INTO contract_pairs VALUES(?,?,?,?,?,?,?,?)
-            ON CONFLICT(polymarket_asset_id, kalshi_ticker) DO UPDATE SET
+        canonical_event = pair.get("canonical_event") or pair.get("event_description", "")
+        canonical_outcome = pair.get("canonical_outcome") or pair.get("outcome_equivalence", "")
+        event_description = pair.get("event_description") or canonical_event
+        outcome_equivalence = pair.get("outcome_equivalence") or canonical_outcome
+        equivalence_mapping = pair.get("equivalence_mapping", "direct")
+        resolution_source = pair.get("resolution_source", "")
+        resolution_criteria = pair.get("resolution_criteria", "")
+        polymarket_expiration = pair.get("polymarket_expiration") or pair.get("expiration", "")
+        kalshi_expiration = pair.get("kalshi_expiration") or pair.get("expiration", "")
+        expiration = pair.get("expiration") or min(polymarket_expiration, kalshi_expiration)
+        settlement_details = pair.get("settlement_details", "")
+        verification_status = pair.get("verification_status", "unverified")
+        reviewer = pair.get("reviewer", "")
+        verified_at = pair.get("verified_at")
+        now_ts = now_utc()
+
+        if verification_status == "verified" and not verified_at:
+            verified_at = now_ts
+        elif verification_status != "verified":
+            verified_at = None
+
+        self.db.execute("""INSERT INTO contract_pairs (
+            polymarket_asset_id, kalshi_ticker, canonical_event, canonical_outcome,
+            event_description, outcome_equivalence, equivalence_mapping,
+            resolution_source, resolution_criteria, polymarket_expiration,
+            kalshi_expiration, expiration, settlement_details,
+            verification_status, reviewer, verified_at, updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(polymarket_asset_id, kalshi_ticker) DO UPDATE SET
+            canonical_event=excluded.canonical_event,
+            canonical_outcome=excluded.canonical_outcome,
             event_description=excluded.event_description,
             outcome_equivalence=excluded.outcome_equivalence,
+            equivalence_mapping=excluded.equivalence_mapping,
             resolution_source=excluded.resolution_source,
+            resolution_criteria=excluded.resolution_criteria,
+            polymarket_expiration=excluded.polymarket_expiration,
+            kalshi_expiration=excluded.kalshi_expiration,
             expiration=excluded.expiration,
+            settlement_details=excluded.settlement_details,
             verification_status=excluded.verification_status,
+            reviewer=excluded.reviewer,
+            verified_at=excluded.verified_at,
             updated_at=excluded.updated_at""",
             (pair["polymarket_asset_id"], pair["kalshi_ticker"],
-             pair["event_description"], pair["outcome_equivalence"],
-             pair["resolution_source"], pair["expiration"],
-             pair["verification_status"], now_utc()))
+             canonical_event, canonical_outcome,
+             event_description, outcome_equivalence,
+             equivalence_mapping, resolution_source, resolution_criteria,
+             polymarket_expiration, kalshi_expiration, expiration,
+             settlement_details, verification_status, reviewer,
+             verified_at, now_ts))
         self.db.commit()
 
     def delete_contract_pair(self, polymarket_asset_id, kalshi_ticker):
