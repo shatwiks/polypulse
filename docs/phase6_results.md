@@ -7,7 +7,7 @@
 **Machine-Readable Audit Record**: [`docs/verification/phase6-verification.json`](file:///d:/PROJECTS/Polypulse/docs/verification/phase6-verification.json)  
 **Live Probe Evidence Snapshot**: [`docs/verification/phase6-live-audit.json`](file:///d:/PROJECTS/Polypulse/docs/verification/phase6-live-audit.json)
 
-**Scope of this update**: Fee runtime code and deterministic tests were rerun. The live connectivity and benchmark sections below retain evidence from earlier Phase 6 audits; neither live trading nor a live CLOB `fd` response was verified in this run.
+**Scope of this update**: The final fee edge-case audit and deterministic depth tests were run on 2026-11-05 UTC. The live connectivity and benchmark sections below retain evidence from earlier Phase 6 audits; neither a live CLOB `fd` response, live Kalshi connectivity, nor live trading was verified in this run.
 
 ---
 
@@ -42,7 +42,7 @@ The current fee fix was verified on 2026-11-05 UTC with the complete Python suit
 
 ```
 .venv/Scripts/python -m pytest tests -q -p no:cacheprovider
-119 passed, 1 skipped, 1 warning in 81.27s
+133 passed, 1 skipped, 1 warning in 61.70s
 python scripts/build_engine.py --test
 [PASS] All C++20 OrderBook and Microstructure tests PASSED.
 npm --prefix frontend run build
@@ -53,6 +53,8 @@ npm --prefix frontend run build
 All 27 cross-venue specific unit and integration tests passed as part of the current full suite:
 
 The separate `tests/test_phase6_fee_runtime.py` suite adds 16 deterministic cases: default and configured scanner versions, Kalshi cent rounding, Sports 0.05, token precedence, CLOB `fd` retrieval and parsing, non-default exponent calculation, incomplete/invalid configuration fail-closed behavior, both direct directions, and both inverse payoff-parity strategies. The official CLOB endpoint was exercised through a recorded-shape HTTP mock; no live fee-curve response or trade was observed in this run.
+
+The 14 cases in `tests/test_phase6_fee_edge_cases.py` add: corroborated fee-free `fd: null`, missing and malformed `fd`, fee-enabled `r/e/to`, total fee-source outage, exact decimal rounding boundaries, preservation of a small CLOB rate, fill-level direct and inverse depth costs, unknown-fee depth gating, and stale depth classification. In a deterministic two-level direct example, the Polymarket fee is **0.00332** from the individual fills; charging the same curve once at the 0.40 VWAP would give **0.00461**. Kalshi's two fills produce **0.03** after one order-level cent ceiling, and the resulting per-contract net spread is **0.33334**. These are test fixtures, not live execution results.
 
 | Test Case Name | Subsystem Verified | Invariant Proven | Result |
 |---|---|---|---|
@@ -106,7 +108,7 @@ dist/assets/stream.worker-BGZ0EJOM.js    0.14 kB
 dist/index.html                          0.37 kB │ gzip:  0.26 kB
 dist/assets/index-ngdlfh5L.css          16.47 kB │ gzip:  4.27 kB
 dist/assets/index-CPUDegqg.js          289.99 kB │ gzip: 85.65 kB
-✓ built in 27.38s
+✓ built in 5.76s
 ```
 
 ---
@@ -283,7 +285,7 @@ python scripts/benchmark_cross_venue.py
 5. Live Venue Connectivity Verified  : Polymarket Live Captured; Kalshi Unconfigured Honest
 6. Benchmark Data Source Separated   : Synthetic Memory Fixtures (0 Live Events in Benchmark)
 7. ClickHouse Query Latency Fixed    : 100 Iters After Warmup -> Server p50=6.5-14.7ms, RTT p50=18.4-27.4ms
-8. Automated Test Pass Rate          : 119 Passed, 1 Skipped (current fee fix)
+8. Automated Test Pass Rate          : 133 Passed, 1 Skipped (current fee audit)
 9. C++20 Microstructure Engine       : All Assertions Passed
 10. React 19 Frontend Production     : 1,578 Modules Built, 0 Errors
 ================================================================================

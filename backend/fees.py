@@ -9,11 +9,20 @@ import json
 import logging
 import math
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP, localcontext
 from typing import Dict, Any, Optional
 from urllib.parse import quote
 import httpx
 
 LOG = logging.getLogger(__name__)
+FEE_QUANTUM = Decimal("0.00001")
+
+
+def _decimal(value: Any) -> Decimal:
+    result = Decimal(str(value))
+    if not result.is_finite():
+        raise InvalidOperation("non-finite fee input")
+    return result
 
 DEFAULT_FEE_VERSION = "v2026.2"
 
@@ -263,28 +272,28 @@ def normalize_polymarket_fee_rate(raw_value: Any, unit: str = "auto") -> Optiona
     if raw_value is None or isinstance(raw_value, bool):
         return None
     try:
-        val = float(raw_value)
-    except (ValueError, TypeError):
+        val = _decimal(raw_value)
+    except (InvalidOperation, ValueError, TypeError):
         return None
 
-    if math.isnan(val) or math.isinf(val) or val < 0.0:
+    if val < 0:
         return None
 
     u = (unit or "auto").strip().lower()
     if u in ("coefficient", "decimal", "rate"):
         if val > 1.0:
             return None
-        return round(val, 8)
+        return float(val)
     elif u in ("bps", "basis_points"):
         if val > 10_000.0:
             return None
-        return round(val / 10_000.0, 8)
+        return float(val / Decimal(10_000))
     else:
         # Auto detection with explicit range validation
         if val <= 1.0:
-            return round(val, 8)
+            return float(val)
         elif val <= 10_000.0:
-            return round(val / 10_000.0, 8)
+            return float(val / Decimal(10_000))
         return None
 
 
@@ -341,6 +350,16 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
     # on p*(1-p), and to records whether the curve is taker-only.
     if "fd" in api_payload:
         fd = api_payload["fd"]
+        if fd is None:
+            if fees_enabled_raw is False:
+                return {"fee_status": "known", "fees_enabled": False, "fee_rate": 0.0,
+                        "fee_exponent": None, "taker_only": None, "fd": None,
+                        "taker_bps": 0.0, "category": "fee_free",
+                        "unit_conversion": "fee_disabled_zero",
+                        "source": api_payload.get("fee_disabled_corroboration", "clob_market_fees_enabled_false")}
+            return {"fee_status": "unknown", "fees_enabled": None, "fee_rate": None,
+                    "fee_exponent": None, "taker_only": None, "fd": None,
+                    "source": "uncorroborated_null_clob_fd"}
         if not isinstance(fd, dict) or not all(k in fd for k in ("r", "e", "to")):
             return {"fee_status": "unknown", "fees_enabled": None, "fee_rate": None,
                     "fee_exponent": None, "taker_only": None, "source": "invalid_clob_fd"}
@@ -359,7 +378,9 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
         return {"fee_status": "known", "fees_enabled": enabled,
                 "fee_rate": rate if enabled else 0.0,
                 "fee_exponent": exponent, "taker_only": taker_only,
-                "fd": {"r": rate, "e": exponent, "to": taker_only},
+                "fd": {"r": fd["r"], "e": fd["e"], "to": taker_only},
+                "fee_rate_exact": str(_decimal(fd["r"])),
+                "fee_exponent_exact": str(_decimal(fd["e"])),
                 "condition_id": api_payload.get("condition_id"),
                 "taker_bps": round(rate * 10_000, 4),
                 "category": str(api_payload.get("category") or "clob_market").lower(),
@@ -418,7 +439,9 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
             "fee_status": "known",
             "fees_enabled": enabled,
             "fee_rate": active_rate,
+            "fee_rate_exact": str(_decimal(fee_schedule["rate"])),
             "fee_exponent": exponent,
+            "fee_exponent_exact": str(_decimal(fee_schedule["exponent"])),
             "taker_only": taker_only,
             "taker_bps": round(active_rate * 10_000.0, 4),
             "category": cat,
@@ -452,6 +475,10 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
             "fee_status": "known",
             "fees_enabled": enabled,
             "fee_rate": active_rate,
+            "fee_rate_exact": (str(_decimal(raw_r) / Decimal(10_000))
+                               if unit_hint.lower() in ("bps", "basis_points")
+                               or (unit_hint.lower() == "auto" and _decimal(raw_r) > 1)
+                               else str(_decimal(raw_r))),
             "fee_exponent": exponent,
             "taker_only": taker_only,
             "taker_bps": round(active_rate * 10_000.0, 4),
@@ -554,7 +581,15 @@ def fetch_polymarket_token_fee_config(
             resp_market = http_client.get(f"{POLYMARKET_CLOB_MARKETS_URL}/{quote(str(condition_id), safe='')}")
             if resp_market.status_code == 200:
                 market_data = resp_market.json()
-                norm = normalize_polymarket_api_fee_config(market_data)
+                if not isinstance(market_data, dict) or "fd" not in market_data:
+                    norm = {"fee_status": "unknown", "fees_enabled": None,
+                            "fee_rate": None, "source": "missing_clob_fd"}
+                else:
+                    if (market_data["fd"] is None and "feesEnabled" not in market_data
+                            and gamma_market is not None and gamma_market.get("feesEnabled") is False):
+                        market_data = {**market_data, "feesEnabled": False,
+                                       "fee_disabled_corroboration": "gamma_fees_enabled_false"}
+                    norm = normalize_polymarket_api_fee_config(market_data)
                 norm["condition_id"] = condition_id
                 if norm["fee_status"] == "known":
                     _TOKEN_FEE_CACHE[tid] = norm
@@ -793,12 +828,21 @@ def calculate_venue_taker_fee(
         # Official Polymarket taker fee curve; category fallback has e = 1.
         active_fee_rate = float(poly_rate_info["fee_rate"])
         exponent = poly_rate_info.get("fee_exponent", 1.0)
-        raw_total = quantity * active_fee_rate * (price * (1.0 - price)) ** exponent
-        total = round(raw_total, 5)
-        per_unit_rounded = round(total / quantity, 6) if quantity > 0 else 0.0
+        try:
+            with localcontext() as ctx:
+                ctx.prec = 40
+                price_d, quantity_d = _decimal(price), _decimal(quantity)
+                rate_d = _decimal(poly_rate_info.get("fee_rate_exact", active_fee_rate))
+                exponent_d = _decimal(poly_rate_info.get("fee_exponent_exact", exponent))
+                raw_total = quantity_d * rate_d * (price_d * (1 - price_d)) ** exponent_d
+                total_d = raw_total.quantize(FEE_QUANTUM, rounding=ROUND_HALF_UP)
+                per_unit_d = (total_d / quantity_d).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError, OverflowError, ZeroDivisionError):
+            return {"per_unit_fee": None, "total_fee": None, "fee_status": "unknown",
+                    "source": "invalid_decimal_fee_curve", "version": sched.version}
         return {
-            "per_unit_fee": per_unit_rounded,
-            "total_fee": total,
+            "per_unit_fee": float(per_unit_d),
+            "total_fee": float(total_d),
             "fee_rate": active_fee_rate,
             "fee_exponent": exponent,
             "taker_only": poly_rate_info.get("taker_only"),
@@ -817,16 +861,19 @@ def calculate_venue_taker_fee(
             # Official CFTC order-level formula:
             # fee_cents = ceil(multiplier * contracts * price * (1 - price) * 100)
             # Capped at max_taker_fee * contracts * 100
-            contracts = math.ceil(quantity)
-            raw_cents = multiplier * contracts * price * (1.0 - price) * 100.0
-            total_cents = math.ceil(round(raw_cents, 6))
-            max_cents = math.ceil(round(sched.kalshi_max_taker_fee * 100.0 * contracts, 6))
-            final_cents = max(1, min(total_cents, max_cents))  # At least 1 cent for non-zero execution
-            total = round(final_cents / 100.0, 4)
-            per_unit = round(total / quantity, 6) if quantity > 0 else 0.0
+            with localcontext() as ctx:
+                ctx.prec = 40
+                price_d, quantity_d = _decimal(price), _decimal(quantity)
+                contracts = quantity_d.to_integral_value(rounding=ROUND_CEILING)
+                raw_cents = _decimal(multiplier) * contracts * price_d * (1 - price_d) * 100
+                total_cents = raw_cents.to_integral_value(rounding=ROUND_CEILING)
+                max_cents = (_decimal(sched.kalshi_max_taker_fee) * 100 * contracts).to_integral_value(rounding=ROUND_CEILING)
+                final_cents = max(Decimal(1), min(total_cents, max_cents))
+                total_d = final_cents / 100
+                per_unit_d = (total_d / quantity_d).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
             return {
-                "per_unit_fee": per_unit,
-                "total_fee": total,
+                "per_unit_fee": float(per_unit_d),
+                "total_fee": float(total_d),
                 "multiplier": multiplier,
                 "fee_status": "known",
                 "rounding": "ceil_whole_cents",
@@ -834,12 +881,17 @@ def calculate_venue_taker_fee(
             }
         else:
             # Legacy unrounded v2026.1 formula
-            raw_fee = min(multiplier * price * (1.0 - price), sched.kalshi_max_taker_fee)
-            per_unit = round(max(raw_fee, sched.kalshi_min_fee), 6)
-            total = round(per_unit * quantity, 4)
+            with localcontext() as ctx:
+                ctx.prec = 40
+                price_d, quantity_d = _decimal(price), _decimal(quantity)
+                raw_fee = min(_decimal(multiplier) * price_d * (1 - price_d),
+                              _decimal(sched.kalshi_max_taker_fee))
+                per_unit_d = max(raw_fee, _decimal(sched.kalshi_min_fee)).quantize(
+                    Decimal("0.000001"), rounding=ROUND_HALF_UP)
+                total_d = (per_unit_d * quantity_d).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
             return {
-                "per_unit_fee": per_unit,
-                "total_fee": total,
+                "per_unit_fee": float(per_unit_d),
+                "total_fee": float(total_d),
                 "multiplier": multiplier,
                 "fee_status": "known",
                 "rounding": "unrounded",
@@ -852,6 +904,47 @@ def calculate_venue_taker_fee(
         "fee_status": "unknown",
         "version": sched.version
     }
+
+
+def calculate_venue_taker_fee_for_fills(
+    venue: str,
+    fills: list[tuple[Any, Any]],
+    version: str = DEFAULT_FEE_VERSION,
+    **fee_options: Any,
+) -> Dict[str, Any]:
+    """Price each executed level, then aggregate one order's fees.
+
+    Polymarket applies five-decimal rounding to each fill. Kalshi v2026.2
+    sums the unrounded level fees and applies its cent ceiling once per order.
+    """
+    try:
+        with localcontext() as ctx:
+            ctx.prec = 40
+            parsed = [(_decimal(price), _decimal(quantity)) for price, quantity in fills]
+            if not parsed or any(not (0 < price < 1 and quantity > 0) for price, quantity in parsed):
+                raise ValueError("invalid fill")
+            quantity = sum((item[1] for item in parsed), Decimal(0))
+            schedule = get_fee_schedule(version)
+            if venue == "kalshi" and schedule.kalshi_rounding_rule == "ceil_whole_cents":
+                multiplier = _decimal(get_kalshi_series_multiplier(fee_options.get("kalshi_ticker")))
+                raw_cents = sum((multiplier * qty * price * (1 - price) * 100
+                                 for price, qty in parsed), Decimal(0))
+                contracts = quantity.to_integral_value(rounding=ROUND_CEILING)
+                max_cents = (_decimal(schedule.kalshi_max_taker_fee) * contracts * 100).to_integral_value(rounding=ROUND_CEILING)
+                total = max(Decimal(1), min(raw_cents.to_integral_value(rounding=ROUND_CEILING), max_cents)) / 100
+            else:
+                costs = [calculate_venue_taker_fee(venue, price, qty, version, **fee_options)
+                         for price, qty in parsed]
+                if any(cost.get("fee_status") != "known" for cost in costs):
+                    return {"fee_status": "unknown", "total_fee": None, "per_unit_fee": None,
+                            "version": schedule.version}
+                total = sum((_decimal(cost["total_fee"]) for cost in costs), Decimal(0))
+            return {"fee_status": "known", "total_fee": float(total),
+                    "per_unit_fee": float((total / quantity).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)),
+                    "version": schedule.version}
+    except (InvalidOperation, ValueError, OverflowError, ZeroDivisionError, TypeError):
+        return {"fee_status": "unknown", "total_fee": None, "per_unit_fee": None,
+                "version": get_fee_schedule(version).version}
 
 
 def evaluate_net_opportunity_costs(
@@ -871,7 +964,9 @@ def evaluate_net_opportunity_costs(
     poly_fee_rate: Optional[float] = None,
     poly_fees_enabled: Optional[bool] = None,
     poly_category: Optional[str] = None,
-    poly_token_fee_config: Optional[Dict[str, Any]] = None
+    poly_token_fee_config: Optional[Dict[str, Any]] = None,
+    buy_fills: Optional[list[tuple[Any, Any]]] = None,
+    sell_fills: Optional[list[tuple[Any, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Evaluates gross spread vs net spread after known trading fees and estimated execution slippage.
@@ -903,24 +998,22 @@ def evaluate_net_opportunity_costs(
     gross_spread_bps = round((gross_spread_per_unit / entry_notional) * 10_000.0, 2) if entry_notional > 0 else 0.0
 
     # 2. Known Trading Fees Applied Independently to Both Execution Legs
-    buy_fee_info = calculate_venue_taker_fee(
-        buy_venue, buy_price, quantity, version,
-        kalshi_ticker=kalshi_ticker,
-        poly_taker_bps=poly_taker_bps,
-        poly_fee_rate=poly_fee_rate,
-        poly_fees_enabled=poly_fees_enabled,
-        poly_category=poly_category,
-        poly_token_fee_config=poly_token_fee_config
-    )
-    sell_fee_info = calculate_venue_taker_fee(
-        sell_venue, sell_price, quantity, version,
-        kalshi_ticker=kalshi_ticker,
-        poly_taker_bps=poly_taker_bps,
-        poly_fee_rate=poly_fee_rate,
-        poly_fees_enabled=poly_fees_enabled,
-        poly_category=poly_category,
-        poly_token_fee_config=poly_token_fee_config
-    )
+    fee_options = dict(kalshi_ticker=kalshi_ticker, poly_taker_bps=poly_taker_bps,
+                       poly_fee_rate=poly_fee_rate, poly_fees_enabled=poly_fees_enabled,
+                       poly_category=poly_category, poly_token_fee_config=poly_token_fee_config)
+    buy_fee_info = (calculate_venue_taker_fee_for_fills(buy_venue, buy_fills, version, **fee_options)
+                    if buy_fills is not None else
+                    calculate_venue_taker_fee(buy_venue, buy_price, quantity, version, **fee_options))
+    sell_fee_info = (calculate_venue_taker_fee_for_fills(sell_venue, sell_fills, version, **fee_options)
+                     if sell_fills is not None else
+                     calculate_venue_taker_fee(sell_venue, sell_price, quantity, version, **fee_options))
+    for fills, info in ((buy_fills, buy_fee_info), (sell_fills, sell_fee_info)):
+        if fills is not None:
+            try:
+                if sum((_decimal(qty) for _, qty in fills), Decimal(0)) != _decimal(quantity):
+                    info.update({"fee_status": "unknown", "total_fee": None})
+            except (InvalidOperation, ValueError, TypeError):
+                info.update({"fee_status": "unknown", "total_fee": None})
 
     # 3. Two-Leg Slippage Calculation (Independent of Fee Status)
     buy_leg_notional = buy_price * quantity
@@ -963,8 +1056,12 @@ def evaluate_net_opportunity_costs(
         }
 
     # 5. Deterministic Net Spread & Estimated Net Profit (Both Legs Known)
-    total_known_fees = round(buy_fee_info["total_fee"] + sell_fee_info["total_fee"], 5)
-    fee_per_unit = round(total_known_fees / quantity, 6) if quantity > 0 else 0.0
+    with localcontext() as ctx:
+        ctx.prec = 40
+        total_known_fees_d = _decimal(buy_fee_info["total_fee"]) + _decimal(sell_fee_info["total_fee"])
+        total_known_fees = float(total_known_fees_d.quantize(FEE_QUANTUM, rounding=ROUND_HALF_UP))
+        fee_per_unit = float((total_known_fees_d / _decimal(quantity)).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP)) if quantity > 0 else 0.0
 
     net_spread_per_unit = round(gross_spread_per_unit - fee_per_unit, 6)
     total_net_profit = round(total_gross_profit - total_known_fees, 5)

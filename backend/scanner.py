@@ -9,6 +9,7 @@ Provides:
 - Direct and Inverse (Mint/Merge) binary outcome arbitrage
 """
 import math
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -73,6 +74,57 @@ def compute_ladder_vwap(levels: List[List[float]], target_qty: float) -> Tuple[O
         return None, round(total_filled, 4)
 
     return round(notional / total_filled, 6), round(total_filled, 4)
+
+
+def _ladder_fills(levels: List[List[float]], target_qty: float) -> Optional[list[tuple[Decimal, Decimal]]]:
+    """Return the exact price and quantity taken from each level for one order."""
+    try:
+        remaining = Decimal(str(target_qty))
+        if remaining <= 0:
+            return None
+        fills = []
+        for level in levels:
+            price, available = Decimal(str(level[0])), Decimal(str(level[1]))
+            if not (price.is_finite() and available.is_finite() and 0 < price < 1 and available >= 0):
+                return None
+            fill = min(remaining, available)
+            if fill > 0:
+                fills.append((price, fill))
+                remaining -= fill
+            if remaining == 0:
+                return fills
+    except (InvalidOperation, ValueError, TypeError, IndexError):
+        return None
+    return None
+
+
+def _top_quantity(book: Dict[str, Any], side: str) -> float:
+    """Cap top-quote executable size at the first level when depth is present."""
+    reported = float(book.get(f"{side}_depth", 0.0))
+    levels = book.get(f"{side}s") or []
+    if levels:
+        first_level = float(levels[0][1])
+        return min(reported, first_level) if reported > 0 else first_level
+    return reported
+
+
+def _depth_net_cost(buy_venue, sell_venue, buy_levels, sell_levels,
+                    buy_vwap, sell_vwap, size, fee_version, fee_options,
+                    inverse_long=False, inverse_short=False):
+    buy_fills = _ladder_fills(buy_levels, size)
+    sell_fills = _ladder_fills(sell_levels, size)
+    if buy_fills is None or sell_fills is None:
+        return {"fee_status": "unknown", "net_spread": None,
+                "estimated_net_spread": None, "is_executable": False}
+    cost = evaluate_net_opportunity_costs(
+        buy_venue=buy_venue, sell_venue=sell_venue,
+        buy_price=buy_vwap, sell_price=sell_vwap, quantity=size,
+        buy_fills=buy_fills, sell_fills=sell_fills,
+        is_inverse_long_both=inverse_long, is_inverse_short_both=inverse_short,
+        version=fee_version, **fee_options)
+    return {key: cost[key] for key in (
+        "fee_status", "buy_venue_fee", "sell_venue_fee", "total_known_fees",
+        "net_spread", "estimated_net_spread", "total_net_profit", "is_executable")}
 
 
 def validate_contract_compatibility(pair: Dict[str, Any], now_dt: Optional[datetime] = None) -> Tuple[bool, str]:
@@ -205,10 +257,10 @@ def compute_cross_venue_spread(
         is_stale = True
 
     # --- 4. Liquidity & Ladders ---
-    poly_bid_qty = float(left.get("bid_depth", 0.0))
-    poly_ask_qty = float(left.get("ask_depth", 0.0))
-    kalshi_bid_qty = float(right.get("bid_depth", 0.0))
-    kalshi_ask_qty = float(right.get("ask_depth", 0.0))
+    poly_bid_qty = _top_quantity(left, "bid")
+    poly_ask_qty = _top_quantity(left, "ask")
+    kalshi_bid_qty = _top_quantity(right, "bid")
+    kalshi_ask_qty = _top_quantity(right, "ask")
 
     mapping = pair.get("equivalence_mapping", "direct")
     canonical_event = pair.get("canonical_event") or pair.get("event_description", "")
@@ -262,6 +314,10 @@ def compute_cross_venue_spread(
         poly_taker_bps = left.get("taker_bps") if left.get("taker_bps") is not None else pair.get("polymarket_taker_bps")
         poly_fees_enabled = left.get("fees_enabled") if left.get("fees_enabled") is not None else pair.get("polymarket_fees_enabled")
         poly_category = left.get("category") or pair.get("polymarket_category") or pair.get("category")
+        depth_fee_options = dict(kalshi_ticker=pair.get("kalshi_ticker"),
+                                 poly_taker_bps=poly_taker_bps, poly_fees_enabled=poly_fees_enabled,
+                                 poly_category=poly_category, poly_fee_rate=poly_fee_rate,
+                                 poly_token_fee_config=poly_token_fee_config)
 
         cost_eval = evaluate_net_opportunity_costs(
             version=fee_version,
@@ -299,6 +355,9 @@ def compute_cross_venue_spread(
                         "sell_vwap": kalshi_v_bid,
                         "vwap_spread": vwap_spread,
                     }
+                    size_vwap_results[str(int(sz))].update(_depth_net_cost(
+                        "polymarket", "kalshi", poly_asks, kalshi_bids,
+                        poly_v_ask, kalshi_v_bid, sz, fee_version, depth_fee_options))
                 else:
                     size_vwap_results[str(int(sz))] = {"fillable": False, "max_available": min(p_filled, k_filled)}
             elif opportunity_type == "long_kalshi_short_poly":
@@ -312,6 +371,9 @@ def compute_cross_venue_spread(
                         "sell_vwap": poly_v_bid,
                         "vwap_spread": vwap_spread,
                     }
+                    size_vwap_results[str(int(sz))].update(_depth_net_cost(
+                        "kalshi", "polymarket", kalshi_asks, poly_bids,
+                        kalshi_v_ask, poly_v_bid, sz, fee_version, depth_fee_options))
                 else:
                     size_vwap_results[str(int(sz))] = {"fillable": False, "max_available": min(k_filled, p_filled)}
             else:
@@ -334,6 +396,10 @@ def compute_cross_venue_spread(
         poly_taker_bps = left.get("taker_bps") if left.get("taker_bps") is not None else pair.get("polymarket_taker_bps")
         poly_fees_enabled = left.get("fees_enabled") if left.get("fees_enabled") is not None else pair.get("polymarket_fees_enabled")
         poly_category = left.get("category") or pair.get("polymarket_category") or pair.get("category")
+        depth_fee_options = dict(kalshi_ticker=pair.get("kalshi_ticker"),
+                                 poly_taker_bps=poly_taker_bps, poly_fees_enabled=poly_fees_enabled,
+                                 poly_category=poly_category, poly_fee_rate=poly_fee_rate,
+                                 poly_token_fee_config=poly_token_fee_config)
 
         if mint_spread > merge_spread:
             best_spread = mint_spread
@@ -398,6 +464,10 @@ def compute_cross_venue_spread(
                         "kalshi_ask_vwap": k_ask_v,
                         "vwap_spread": vwap_spread,
                     }
+                    size_vwap_results[str(int(sz))].update(_depth_net_cost(
+                        "polymarket", "kalshi", poly_asks, kalshi_asks,
+                        p_ask_v, k_ask_v, sz, fee_version, depth_fee_options,
+                        inverse_long=True))
                 else:
                     size_vwap_results[str(int(sz))] = {"fillable": False, "max_available": min(p_filled, k_filled)}
             elif opportunity_type in ("synthetic_short_both", "merge_both_short"):
@@ -411,6 +481,10 @@ def compute_cross_venue_spread(
                         "kalshi_bid_vwap": k_bid_v,
                         "vwap_spread": vwap_spread,
                     }
+                    size_vwap_results[str(int(sz))].update(_depth_net_cost(
+                        "polymarket", "kalshi", poly_bids, kalshi_bids,
+                        p_bid_v, k_bid_v, sz, fee_version, depth_fee_options,
+                        inverse_short=True))
                 else:
                     size_vwap_results[str(int(sz))] = {"fillable": False, "max_available": min(p_filled, k_filled)}
             else:
@@ -432,6 +506,10 @@ def compute_cross_venue_spread(
         status = "candidate"
 
     is_arbitrage = bool(status == "executable")
+    if not is_arbitrage:
+        for row in size_vwap_results.values():
+            if "is_executable" in row:
+                row["is_executable"] = False
 
     return {
         "pair_id": f"{pair['polymarket_asset_id']}:{pair['kalshi_ticker']}",

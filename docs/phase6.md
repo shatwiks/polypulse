@@ -131,6 +131,8 @@ $$\text{Net Spread} = \text{Gross Spread} - \text{Fee}_{\text{buy\_venue}} - \te
        - **Geopolitics** (`geopolitics`, fee-free): $\text{feeRate} = 0.00$
        - **Other Official Categories**: Crypto $0.07$, Sports $0.05$, Tech $0.04$, Culture $0.05$, Weather $0.05$, General/Other $0.05$.
     4. **Missing or Invalid Fee Configuration**: If the fee configuration is missing or invalid, the fee is classified as `fee_status = "unknown"`, `net_spread = None`, and the scanner **never** claims a positive executable net spread (`status = "candidate"`, `is_arbitrage = False`).
+  - **CLOB `fd` edge cases**: An explicit `fd: null` is fee-free only when the CLOB response itself, or the token-matched Gamma market, explicitly reports `feesEnabled=false`. A successful CLOB response with no `fd`, a malformed `fd`, or unavailable fee information remains unknown. An unreadable CLOB response does not inherit a category fee merely because the market title or fee type is available.
+  - **Depth execution fees**: `vwap_by_size` now includes fee status, both leg fees, total fees, net spread, estimated net spread, and executable status. Polymarket's curve is evaluated at each filled level's actual price and quantity, with five-decimal rounding per fill before aggregation. Kalshi sums each level's raw fee and applies the cent ceiling once for the order. The headline top-quote result is capped at the first level's quantity; it does not price deeper liquidity at the top price. Depth executable flags also respect the scanner's stale-market gate. Decimal arithmetic is used for fee amounts and rounding (`ROUND_HALF_UP` for five-decimal Polymarket estimates; `ROUND_CEILING` for Kalshi cents). Source coefficients are retained without eight-decimal truncation. The exact Polymarket tie convention has not been verified against live fills.
 - **Estimated Slippage Across Both Execution Legs**:
   Cross-venue execution requires entering two distinct market legs. The slippage buffer ($S_{\text{bps}} = 10\text{ bps}$) is applied per leg across each leg's notional value:
   $$\text{Slippage}_{\text{buy}} = P_{\text{buy}} \times \frac{S_{\text{bps}}}{10{,}000} \times Q, \quad \text{Slippage}_{\text{sell}} = P_{\text{sell}} \times \frac{S_{\text{bps}}}{10{,}000} \times Q$$
@@ -244,7 +246,7 @@ Measured against a populated dataset of **5,000 spread observations** and **2,50
 
 ## 8. Verification Results
 
-Current runtime fee fix: `POLYPULSE_FEE_VERSION` selects the active schedule (default `v2026.2`). `MarketState` passes it to every direct and inverse scanner evaluation, and persisted opportunities retain that version. Live mode refreshes token-specific CLOB fee curves every five minutes; until a usable configuration is available, the affected scanner result remains `fee_status=unknown`. The CLOB request and exponent behavior were verified with deterministic HTTP fixtures, not a live market request.
+Current runtime fee fix: `POLYPULSE_FEE_VERSION` selects the active schedule (default `v2026.2`). `MarketState` passes it to every direct and inverse scanner evaluation, and persisted opportunities retain that version. Live mode refreshes token-specific CLOB fee curves every five minutes; until a usable configuration is available, the affected scanner result remains `fee_status=unknown`. CLOB edge cases and depth fees were verified with deterministic HTTP and orderbook fixtures, not live fee responses or live Kalshi connectivity.
 
 | Component | Test Suite | Tests | Result |
 |---|---|---|---|
@@ -255,7 +257,8 @@ Current runtime fee fix: `POLYPULSE_FEE_VERSION` selects the active schedule (de
 | **Phase 2 Ingestion & State** | `tests/test_phase2.py` | 19 | **19/19 PASSED** |
 | **End-to-End Pipeline** | `tests/test_pipeline.py` | 3 | **3/3 PASSED** |
 | **Runtime Fee Fix** | `tests/test_phase6_fee_runtime.py` | 16 | **16/16 PASSED** |
-| **Total Test Suite** | `.venv/Scripts/python -m pytest tests -q -p no:cacheprovider` | 120 | **119 PASSED, 1 SKIPPED** (Live ClickHouse) |
+| **Fee Edge Cases & Depth** | `tests/test_phase6_fee_edge_cases.py` | 14 | **14/14 PASSED** |
+| **Total Test Suite** | `.venv/Scripts/python -m pytest tests -q -p no:cacheprovider` | 134 | **133 PASSED, 1 SKIPPED** (Live ClickHouse) |
 | **C++20 Microstructure Engine** | `python scripts/build_engine.py --test` | Suite | **ALL PASSED** |
 | **React 19 Terminal Workspace** | `npm --prefix frontend run build` | 1,578 modules | **PASSED (0 errors, 85.65 kB gzip)** |
 

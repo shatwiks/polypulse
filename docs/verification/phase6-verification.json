@@ -1,6 +1,6 @@
 {
   "audit_name": "Phase 6 Cross-Venue Intelligence and Arbitrage Scanner Correctness & Ground-Truth Audit",
-  "timestamp_utc": "2026-11-05T17:23:26+00:00",
+  "timestamp_utc": "2026-11-05T18:21:21+00:00",
   "environment": {
     "os": "Windows 11",
     "python_version": "3.14.3",
@@ -9,13 +9,13 @@
     "clickhouse_version": "25.8.1.1818"
   },
   "deterministic_test_proof": {
-    "total_repo_tests_collected": 120,
-    "tests_passed": 119,
+    "total_repo_tests_collected": 134,
+    "tests_passed": 133,
     "tests_skipped": 1,
     "tests_failed": 0,
     "pass_rate_percentage": 100.0,
     "command": ".venv/Scripts/python -m pytest tests -q -p no:cacheprovider",
-    "elapsed_seconds": 81.27,
+    "elapsed_seconds": 61.70,
     "skip_reason": "Live ClickHouse service unavailable for tests/test_clickhouse_live.py",
     "runtime_fee_fix_suite": {
       "file": "tests/test_phase6_fee_runtime.py",
@@ -24,6 +24,15 @@
       "tests_failed": 0,
       "evidence_type": "deterministic fixtures and mocked CLOB HTTP; no live fee-curve response",
       "cases": ["v2026.2_default", "runtime_scanner_version", "kalshi_cent_rounding", "sports_coefficient_0.05", "token_curve_precedence", "clob_fd_r_e_to", "nondefault_exponent", "unknown_configuration_fail_closed", "both_direct_directions", "both_inverse_payoff_parity_strategies"]
+    },
+    "fee_edge_case_suite": {
+      "file": "tests/test_phase6_fee_edge_cases.py",
+      "tests_collected": 14,
+      "tests_passed": 14,
+      "tests_failed": 0,
+      "evidence_type": "deterministic mocked HTTP and orderbook fills; no live fee response or Kalshi session",
+      "cases": ["corroborated_null_fd_fee_free", "missing_fd_unknown", "malformed_fd_unknown", "valid_fee_enabled_r_e_to", "fee_sources_unavailable_unknown", "polymarket_decimal_half_up_boundary", "kalshi_order_cent_ceiling_boundary", "small_clob_rate_precision", "direct_depth_fees_per_fill", "inverse_depth_fees_per_fill", "unknown_fee_depth_gating", "stale_depth_gating"],
+      "two_level_direct_fixture": {"polymarket_fee_per_fill_sum": 0.00332, "polymarket_fee_at_vwap_incorrect": 0.00461, "kalshi_order_fee": 0.03, "net_spread_per_contract": 0.33334}
     },
     "cross_venue_suite": {
       "file": "tests/test_cross_venue.py",
