@@ -1,6 +1,6 @@
 {
   "audit_name": "PolyPulse Phase 6 Live Feed & Ground-Truth Verification Audit",
-  "timestamp_utc": "2026-11-05T15:00:16.529827+00:00",
+  "timestamp_utc": "2026-11-05T15:35:12.000000+00:00",
   "polymarket_live": {
     "status": "connected",
     "server_timestamp": "1793890817",
@@ -35,10 +35,13 @@
   },
   "clickhouse_performance": {
     "client_mode": "Persistent connection pool (httpx.AsyncClient with 127.0.0.1)",
-    "p50_query_latency_ms": 25.99,
-    "p95_query_latency_ms": 37.24,
-    "server_execution_ms": 4.13,
-    "rows_read": 0,
+    "dataset_status": "Populated benchmark dataset with 5,000 spread observations and 2,500 arbitrage opportunities across 4 pairs",
+    "p50_query_latency_ms": 25.8,
+    "p95_query_latency_ms": 76.8,
+    "server_execution_p50_ms": 12.6,
+    "server_execution_p95_ms": 65.3,
+    "rows_read": 5000,
+    "bytes_read": 577592,
     "target_database": "polypulse"
   }
 }

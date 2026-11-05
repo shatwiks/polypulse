@@ -1,6 +1,6 @@
 {
   "audit_name": "Phase 6 Cross-Venue Intelligence and Arbitrage Scanner Correctness & Ground-Truth Audit",
-  "timestamp_utc": "2026-11-05T15:00:16.000+00:00",
+  "timestamp_utc": "2026-11-05T15:35:22.000+00:00",
   "environment": {
     "os": "Windows 11",
     "python_version": "3.14.3",
@@ -9,15 +9,15 @@
     "clickhouse_version": "25.8.1.1818"
   },
   "deterministic_test_proof": {
-    "total_repo_tests_collected": 103,
-    "tests_passed": 102,
+    "total_repo_tests_collected": 104,
+    "tests_passed": 103,
     "tests_skipped": 1,
     "tests_failed": 0,
     "pass_rate_percentage": 100.0,
     "cross_venue_suite": {
       "file": "tests/test_cross_venue.py",
-      "tests_collected": 26,
-      "tests_passed": 26,
+      "tests_collected": 27,
+      "tests_passed": 27,
       "tests_failed": 0,
       "coverage": [
         "contract_pair_persistence",
@@ -31,6 +31,9 @@
         "kalshi_cftc_fee_schedule_v2026_2_series_multipliers",
         "kalshi_cftc_ceil_cent_rounding",
         "polymarket_dynamic_taker_fees",
+        "polymarket_category_fee_schedules",
+        "bidirectional_execution_recalculation",
+        "dual_leg_slippage_model",
         "expired_contract_revalidation_against_current_time",
         "opportunity_state_machine_8_states",
         "quote_freshness_enforcement",
@@ -60,38 +63,33 @@
     "hardware": "AMD Ryzen (AMD64 Family 25 Model 68) / Windows 11 / NVMe SSD",
     "book_normalization": {
       "iterations": 100000,
-      "elapsed_sec": 1.7831,
-      "throughput_ops_sec": 56083.34,
-      "latency_us_per_op": 17.831
+      "throughput_ops_sec": 81324.05,
+      "latency_us_per_op": 12.296
     },
     "ladder_vwap_5_levels": {
       "iterations": 100000,
-      "elapsed_sec": 0.2815,
-      "throughput_ops_sec": 355224.52,
-      "latency_us_per_op": 2.815
+      "throughput_ops_sec": 331460.47,
+      "latency_us_per_op": 3.017
     },
     "fee_engine_evaluation": {
       "iterations": 100000,
-      "elapsed_sec": 1.4850,
-      "throughput_ops_sec": 67339.25,
-      "latency_us_per_op": 14.850
+      "throughput_ops_sec": 50538.38,
+      "latency_us_per_op": 19.787
     },
     "scanner_pair_evaluation": {
-      "iterations": 20000,
-      "elapsed_sec": 1.5237,
-      "throughput_pairs_sec": 13125.86,
-      "latency_us_per_pair": 76.185,
-      "note": "Evaluated over synthetic memory test fixtures for throughput benchmark; 0 live orders executed"
+      "iterations": 50000,
+      "throughput_pairs_sec": 15462.81,
+      "latency_us_per_pair": 64.671,
+      "note": "Evaluated over synthetic memory test fixtures for algorithmic throughput; 0 live exchange orders executed"
     },
     "clickhouse_historical_queries": {
       "client_mode": "Persistent httpx.AsyncClient pool (127.0.0.1)",
-      "top_spread_pairs": { "p50_ms": 33.20, "p95_ms": 42.03, "mean_ms": 33.49 },
-      "opportunity_frequency": { "p50_ms": 27.59, "p95_ms": 37.04, "mean_ms": 28.73 },
-      "duration_stats": { "p50_ms": 24.75, "p95_ms": 26.56, "mean_ms": 24.24 },
-      "venue_comparison": { "p50_ms": 21.29, "p95_ms": 25.80, "mean_ms": 21.68 },
-      "quote_freshness": { "p50_ms": 22.00, "p95_ms": 25.50, "mean_ms": 22.60 },
-      "server_execution_elapsed_ns": 4132770,
-      "server_execution_ms": 4.13
+      "dataset_status": "Populated benchmark dataset (5,000 spread observations, 2,500 arbitrage opportunities across 4 pairs)",
+      "top_spread_pairs": { "rows_read": 5000, "bytes_read": 577592, "server_p50_ms": 14.1, "server_p95_ms": 346.5, "client_rtt_p50_ms": 27.1, "client_rtt_p95_ms": 360.8 },
+      "opportunity_frequency": { "rows_read": 5000, "bytes_read": 415055, "server_p50_ms": 16.5, "server_p95_ms": 74.7, "client_rtt_p50_ms": 30.9, "client_rtt_p95_ms": 91.3 },
+      "duration_stats": { "rows_read": 2500, "bytes_read": 291520, "server_p50_ms": 10.9, "server_p95_ms": 13.0, "client_rtt_p50_ms": 22.7, "client_rtt_p95_ms": 28.1 },
+      "venue_comparison": { "rows_read": 2500, "bytes_read": 329338, "server_p50_ms": 12.6, "server_p95_ms": 65.3, "client_rtt_p50_ms": 25.8, "client_rtt_p95_ms": 76.8 },
+      "quote_freshness": { "rows_read": 5000, "bytes_read": 100000, "server_p50_ms": 9.3, "server_p95_ms": 99.7, "client_rtt_p50_ms": 25.0, "client_rtt_p95_ms": 116.1 }
     }
   },
   "contract_matching_audit": {

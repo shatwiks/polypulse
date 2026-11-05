@@ -41,21 +41,21 @@ The entire PolyPulse testing harness was executed cleanly with zero failures acr
 platform win32 -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0
 rootdir: D:\PROJECTS\Polypulse
 plugins: anyio-4.16.0, requests-mock-1.12.1
-collected 103 items
+collected 104 items
 
 tests\test_clickhouse_analytics.py ................                      [ 15%]
 tests\test_clickhouse_live.py s                                          [ 16%]
-tests\test_cross_venue.py ..........................                     [ 41%]
-tests\test_phase2.py ...................                                 [ 60%]
-tests\test_phase3.py ..........                                          [ 69%]
-tests\test_pipeline.py ...                                               [ 72%]
+tests\test_cross_venue.py ...........................                    [ 42%]
+tests\test_phase2.py ...................                                 [ 61%]
+tests\test_phase3.py ..........                                          [ 70%]
+tests\test_pipeline.py ...                                               [ 73%]
 tests\test_wallet_markout.py ............................                [100%]
 
-============= 102 passed, 1 skipped, 1 warning in 83.15s =============
+============= 103 passed, 1 skipped, 1 warning in 71.50s =============
 ```
 
 ### 2.2 Phase 6 Cross-Venue Unit Suite (`tests/test_cross_venue.py`)
-All 26 cross-venue specific unit and integration tests passed in 3.49 seconds:
+All 27 cross-venue specific unit and integration tests passed in 3.51 seconds:
 
 | Test Case Name | Subsystem Verified | Invariant Proven | Result |
 |---|---|---|---|
@@ -72,9 +72,10 @@ All 26 cross-venue specific unit and integration tests passed in 3.49 seconds:
 | `test_kalshi_cftc_fee_schedule` | `fees.py` | Legacy v2026.1 unrounded formula baseline | **PASS** |
 | `test_fee_schedule_v2026_2_series_multipliers_and_cftc_rounding` | `fees.py` | Official CFTC series multipliers & ceil-cent rounding | **PASS** |
 | `test_polymarket_dynamic_taker_fee` | `fees.py` | Market-specific dynamic taker fee override (25 bps) | **PASS** |
+| `test_polymarket_category_fee_schedules_and_bidirectional_recalculation` | `fees.py` | Finance (20 bps), Economics (15 bps), Politics (10 bps), fee-free Geopolitics, and dual-leg slippage | **PASS** |
 | `test_expired_contract_revalidation_against_current_time` | `scanner.py` | Contracts expiring before 2026-11-05 rejected as expired | **PASS** |
 | `test_polymarket_clob_fee` | `fees.py` | Standard 0.00% taker fee verification | **PASS** |
-| `test_net_spread_with_slippage_buffer` | `fees.py` | Gross spread minus fees minus 10 bps slippage | **PASS** |
+| `test_net_spread_with_slippage_buffer` | `fees.py` | Gross spread minus fees minus 10 bps slippage across both legs | **PASS** |
 | `test_opportunity_state_candidate_vs_executable`| `scanner.py` | Gross $> 0$ with Net $\le 0$ classified as `candidate` | **PASS** |
 | `test_opportunity_state_executable` | `scanner.py` | Verified + Fresh + Net $> 0$ + Depth $> 0$ classified `executable` | **PASS** |
 | `test_opportunity_state_insufficient_liquidity`| `scanner.py` | Price spread exists but 0 depth available | **PASS** |
@@ -245,27 +246,27 @@ The 10,000 events evaluated in `scripts/benchmark_cross_venue.py` are **syntheti
 ## 6. Query Performance & ClickHouse Benchmark Ground Truth
 
 ### 6.1 Latency Optimization Ground Truth
-Following the resolution of the client-side connection bottleneck, historical cross-venue analytics were re-measured with 10 repeated iterations per query against `polypulse-clickhouse-1`:
+Following the resolution of the client-side connection bottleneck, historical cross-venue analytics were benchmarked against a **populated dataset of 5,000 spread observations and 2,500 arbitrage opportunities** across 4 representative pairs, reading actual rows and bytes from disk:
 
 ```powershell
 python scripts/benchmark_cross_venue.py
 ```
 
-### 6.2 Empirical Results Table
+### 6.2 Empirical Results Table (Populated Dataset)
 
-| Analytical Query Function | Target Table / View | p50 Latency | p95 Latency | Mean Latency | ClickHouse Server Elapsed | Rows Read |
+| Analytical Query Function | Target Table / View | Rows Read | Bytes Read | ClickHouse Server p50 / p95 | Client RTT p50 / p95 | Rows Returned |
 |---|---|---|---|---|---|---|
-| **`top_spread_pairs`** | `spread_observations FINAL` | **33.20 ms** | 42.03 ms | 33.49 ms | 4.13 ms | 0 (table empty) |
-| **`opportunity_frequency`** | `arbitrage_opportunities FINAL` | **27.59 ms** | 37.04 ms | 28.73 ms | 3.85 ms | 0 (table empty) |
-| **`duration_stats`** | `arbitrage_opportunities FINAL` | **24.75 ms** | 26.56 ms | 24.24 ms | 3.20 ms | 0 (table empty) |
-| **`venue_comparison`** | `cross_venue_quotes FINAL` | **21.29 ms** | 25.80 ms | 21.68 ms | 2.90 ms | 0 (table empty) |
-| **`quote_freshness`** | `cross_venue_quotes FINAL` | **22.00 ms** | 25.50 ms | 22.60 ms | 2.85 ms | 0 (table empty) |
+| **`top_spread_pairs`** | `spread_observations FINAL` | **5,000** | 577,592 B | **14.1 ms** / 346.5 ms | **27.1 ms** / 360.8 ms | 4 pairs |
+| **`opportunity_frequency`** | `spread_observations FINAL` | **5,000** | 415,055 B | **16.5 ms** / 74.7 ms | **30.9 ms** / 91.3 ms | 4 rows |
+| **`duration_stats`** | `arbitrage_opportunities FINAL` | **2,500** | 291,520 B | **10.9 ms** / 13.0 ms | **22.7 ms** / 28.1 ms | 1 summary |
+| **`venue_comparison`** | `arbitrage_opportunities FINAL` | **2,500** | 329,338 B | **12.6 ms** / 65.3 ms | **25.8 ms** / 76.8 ms | 2 venue pairs |
+| **`quote_freshness`** | `spread_observations FINAL` | **5,000** | 100,000 B | **9.3 ms** / 99.7 ms | **25.0 ms** / 116.1 ms | 1 summary |
 
 ### 6.3 In-Memory Algorithmic Microbenchmarks
-- **Book Normalization (Millionth Ticks)**: **56,083.34 ops/sec** ($17.83\text{ }\mu\text{s/op}$)
-- **Depth Ladder VWAP Kernel (5 levels)**: **355,224.52 ops/sec** ($2.82\text{ }\mu\text{s/op}$)
-- **Versioned Fee Schedule Engine (`v2026.2`)**: **67,339.25 ops/sec** ($14.85\text{ }\mu\text{s/op}$)
-- **Full 8-State Scanner Evaluation**: **13,125.86 pairs/sec** ($76.19\text{ }\mu\text{s/pair}$)
+- **Book Normalization (Millionth Ticks)**: **81,324.05 ops/sec** ($12.30\text{ }\mu\text{s/op}$)
+- **Depth Ladder VWAP Kernel (5 levels)**: **331,460.47 ops/sec** ($3.02\text{ }\mu\text{s/op}$)
+- **Versioned Fee Schedule Engine (`v2026.2`)**: **50,538.38 ops/sec** ($19.79\text{ }\mu\text{s/op}$)
+- **Full 8-State Scanner Evaluation**: **15,462.81 pairs/sec** ($64.67\text{ }\mu\text{s/pair}$)
 
 ---
 
@@ -290,8 +291,8 @@ python scripts/benchmark_cross_venue.py
 4. Arbitrage Terminology Corrected   : Payoff Parity vs CTF Minting Distinct; No "Riskless"
 5. Live Venue Connectivity Verified  : Polymarket Live Captured; Kalshi Unconfigured Honest
 6. Benchmark Data Source Separated   : Synthetic Memory Fixtures (0 Live Events in Benchmark)
-7. ClickHouse Query Latency Fixed    : Persistent Pool -> p50=21-33ms (Down from 1,035ms)
-8. Automated Test Pass Rate          : 102 Passed, 1 Skipped (100% Pass Rate)
+7. ClickHouse Query Latency Fixed    : Persistent Pool -> p50=21-31ms (Populated with 5,000 rows)
+8. Automated Test Pass Rate          : 103 Passed, 1 Skipped (100% Pass Rate)
 9. C++20 Microstructure Engine       : All Assertions Passed
 10. React 19 Frontend Production     : 1,578 Modules Built, 0 Errors
 ================================================================================

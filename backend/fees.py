@@ -1,7 +1,8 @@
 """
 PolyPulse Phase 6: Versioned Fee & Execution Cost Engine.
 Provides official fee schedules, series-specific multipliers, regulatory rounding rules,
-and net spread calculations for Polymarket and Kalshi binary prediction markets.
+dynamic Polymarket category fee rates, and multi-leg net spread calculations for
+Polymarket and Kalshi binary prediction markets.
 """
 import math
 from dataclasses import dataclass
@@ -22,6 +23,15 @@ KALSHI_SERIES_MULTIPLIERS = {
     "SPX": 0.035,
     "NASDAQ": 0.035,
     "DEFAULT": 0.07
+}
+
+# Category defaults for Polymarket dynamic market-specific fee schedules
+POLYMARKET_CATEGORY_FEES = {
+    "finance": {"fees_enabled": True, "taker_bps": 20.0, "description": "Finance / Rate / Derivative markets"},
+    "economics": {"fees_enabled": True, "taker_bps": 15.0, "description": "Macroeconomic Indicator markets"},
+    "politics": {"fees_enabled": True, "taker_bps": 10.0, "description": "Elections / Political nomination markets"},
+    "geopolitics": {"fees_enabled": False, "taker_bps": 0.0, "description": "Geopolitical events (fee-free)"},
+    "default": {"fees_enabled": False, "taker_bps": 0.0, "description": "Standard binary CLOB baseline (fee-free)"}
 }
 
 
@@ -61,9 +71,9 @@ FEE_SCHEDULES: Dict[str, FeeScheduleVersion] = {
     "v2026.2": FeeScheduleVersion(
         version="v2026.2",
         effective_date="2026-11-01T00:00:00Z",
-        source="Kalshi Official CFTC Fee Schedule (Appendix B) / Polymarket Dynamic Fee Model",
+        source="Kalshi Official CFTC Fee Schedule (Appendix B) / Polymarket Dynamic Category Fee Model",
         polymarket_maker_bps=0.0,
-        polymarket_taker_bps=0.0,  # Standard baseline; dynamic per-market fee rates override this
+        polymarket_taker_bps=0.0,  # Baseline default; dynamic market metadata overrides this
         polymarket_settlement_fee_pct=2.0,  # 2% on net redemption profits
         kalshi_maker_bps=0.0,
         kalshi_taker_formula="ceil(multiplier * contracts * P * (1 - P) * 100) / 100",
@@ -71,7 +81,7 @@ FEE_SCHEDULES: Dict[str, FeeScheduleVersion] = {
         kalshi_min_fee=0.01,        # $0.01 minimum fee per executed order
         kalshi_rounding_rule="ceil_whole_cents",  # CFTC official order-level cent ceiling
         default_slippage_bps=10.0,
-        notes="Official CFTC series multipliers, contract-quantity integer cent rounding, and dynamic Polymarket taker fee support."
+        notes="Official CFTC series multipliers, contract-quantity integer cent rounding, and dynamic Polymarket market-specific fee schedules."
     )
 }
 
@@ -90,25 +100,73 @@ def get_kalshi_series_multiplier(ticker: Optional[str]) -> float:
     return KALSHI_SERIES_MULTIPLIERS["DEFAULT"]
 
 
+def get_polymarket_market_fee_rate(
+    market_category: Optional[str] = None,
+    fees_enabled: Optional[bool] = None,
+    custom_taker_bps: Optional[float] = None,
+    version: str = DEFAULT_FEE_VERSION
+) -> Dict[str, Any]:
+    """
+    Determines active Polymarket taker fee rate and whether fees are enabled.
+    Supports explicit overrides, market metadata, and category defaults.
+    """
+    if custom_taker_bps is not None:
+        enabled = fees_enabled if fees_enabled is not None else (custom_taker_bps > 0)
+        return {
+            "fees_enabled": enabled,
+            "taker_bps": float(custom_taker_bps) if enabled else 0.0,
+            "category": "custom"
+        }
+
+    cat_key = (market_category or "default").lower()
+    cat_info = POLYMARKET_CATEGORY_FEES.get(cat_key, POLYMARKET_CATEGORY_FEES["default"])
+
+    enabled = fees_enabled if fees_enabled is not None else cat_info["fees_enabled"]
+    bps = cat_info["taker_bps"] if enabled else 0.0
+    return {
+        "fees_enabled": enabled,
+        "taker_bps": float(bps),
+        "category": cat_key
+    }
+
+
 def calculate_venue_taker_fee(
     venue: str,
     price: float,
     quantity: float,
     version: str = DEFAULT_FEE_VERSION,
     kalshi_ticker: Optional[str] = None,
-    poly_taker_bps: Optional[float] = None
+    poly_taker_bps: Optional[float] = None,
+    poly_fees_enabled: Optional[bool] = None,
+    poly_category: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Calculates exact known taker fee for an order.
     Supports official CFTC cent-rounding rules and series multipliers for Kalshi,
-    and market-specific dynamic taker fee rates for Polymarket.
+    and market-specific dynamic taker fee rates across Finance, Politics, Economics, and Geopolitics for Polymarket.
     """
     sched = get_fee_schedule(version)
     if price <= 0.0 or price >= 1.0 or quantity <= 0.0:
         return {"per_unit_fee": 0.0, "total_fee": 0.0, "version": sched.version}
 
     if venue == "polymarket":
-        active_taker_bps = poly_taker_bps if poly_taker_bps is not None else sched.polymarket_taker_bps
+        poly_rate_info = get_polymarket_market_fee_rate(
+            market_category=poly_category,
+            fees_enabled=poly_fees_enabled,
+            custom_taker_bps=poly_taker_bps,
+            version=version
+        )
+        if not poly_rate_info["fees_enabled"]:
+            return {
+                "per_unit_fee": 0.0,
+                "total_fee": 0.0,
+                "taker_bps": 0.0,
+                "fees_enabled": False,
+                "category": poly_rate_info.get("category", "default"),
+                "version": sched.version
+            }
+
+        active_taker_bps = poly_rate_info["taker_bps"]
         per_unit = (active_taker_bps / 10_000.0) * price
         total = round(per_unit * quantity, 4)
         per_unit_rounded = round(total / quantity, 6) if quantity > 0 else 0.0
@@ -116,6 +174,8 @@ def calculate_venue_taker_fee(
             "per_unit_fee": per_unit_rounded,
             "total_fee": total,
             "taker_bps": active_taker_bps,
+            "fees_enabled": True,
+            "category": poly_rate_info.get("category", "default"),
             "version": sched.version
         }
 
@@ -168,11 +228,14 @@ def evaluate_net_opportunity_costs(
     slippage_bps: Optional[float] = None,
     version: str = DEFAULT_FEE_VERSION,
     kalshi_ticker: Optional[str] = None,
-    poly_taker_bps: Optional[float] = None
+    poly_taker_bps: Optional[float] = None,
+    poly_fees_enabled: Optional[bool] = None,
+    poly_category: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Evaluates gross spread vs net spread after known trading fees and estimated execution slippage.
-    Accounts for full contract quantity and official CFTC rounding rules.
+    Accounts for both execution legs, series multipliers, official CFTC rounding rules,
+    and market-specific Polymarket fee rates.
     """
     sched = get_fee_schedule(version)
     active_slippage = slippage_bps if slippage_bps is not None else sched.default_slippage_bps
@@ -196,26 +259,41 @@ def evaluate_net_opportunity_costs(
 
     total_gross_profit = round(gross_spread_per_unit * quantity, 4)
 
-    # 2. Known Trading Fees with Quantity & Rounding
+    # 2. Known Trading Fees for Both Execution Legs
     buy_fee_info = calculate_venue_taker_fee(
         buy_venue, buy_price, quantity, version,
-        kalshi_ticker=kalshi_ticker, poly_taker_bps=poly_taker_bps
+        kalshi_ticker=kalshi_ticker,
+        poly_taker_bps=poly_taker_bps,
+        poly_fees_enabled=poly_fees_enabled,
+        poly_category=poly_category
     )
     sell_fee_info = calculate_venue_taker_fee(
         sell_venue, sell_price, quantity, version,
-        kalshi_ticker=kalshi_ticker, poly_taker_bps=poly_taker_bps
+        kalshi_ticker=kalshi_ticker,
+        poly_taker_bps=poly_taker_bps,
+        poly_fees_enabled=poly_fees_enabled,
+        poly_category=poly_category
     )
 
     total_known_fees = round(buy_fee_info["total_fee"] + sell_fee_info["total_fee"], 4)
     fee_per_unit = round(total_known_fees / quantity, 6) if quantity > 0 else 0.0
 
-    # 3. Net Spread after Known Trading Fees
+    # 3. Net Spread after Known Trading Fees (Deterministic)
     net_spread_per_unit = round(gross_spread_per_unit - fee_per_unit, 6)
     total_net_profit = round(total_gross_profit - total_known_fees, 4)
 
-    # 4. Estimated Slippage & Execution Costs
-    slippage_cost_per_unit = round(entry_notional * (active_slippage / 10_000.0), 6)
-    total_slippage_cost = round(slippage_cost_per_unit * quantity, 4)
+    # 4. Estimated Execution Slippage Across BOTH Legs
+    # Slippage buffer applies per-leg to each leg's respective notional value:
+    # Leg 1 (Buy Leg): buy_price * quantity
+    # Leg 2 (Sell Leg): sell_price * quantity
+    buy_leg_notional = buy_price * quantity
+    sell_leg_notional = sell_price * quantity
+    total_execution_notional = round(buy_leg_notional + sell_leg_notional, 4)
+
+    buy_leg_slippage = round(buy_price * (active_slippage / 10_000.0) * quantity, 4)
+    sell_leg_slippage = round(sell_price * (active_slippage / 10_000.0) * quantity, 4)
+    total_slippage_cost = round(buy_leg_slippage + sell_leg_slippage, 4)
+    slippage_cost_per_unit = round(total_slippage_cost / quantity, 6) if quantity > 0 else 0.0
 
     estimated_net_spread_per_unit = round(net_spread_per_unit - slippage_cost_per_unit, 6)
     total_estimated_net_profit = round(total_net_profit - total_slippage_cost, 4)
@@ -233,12 +311,18 @@ def evaluate_net_opportunity_costs(
         "net_spread": net_spread_per_unit,
         "net_spread_bps": net_spread_bps,
         "total_net_profit": total_net_profit,
-        "slippage_bps": active_slippage,
+        "slippage_bps_per_leg": active_slippage,
+        "buy_leg_slippage": buy_leg_slippage,
+        "sell_leg_slippage": sell_leg_slippage,
         "total_slippage_cost": total_slippage_cost,
+        "slippage_application": "per_leg_across_both_legs",
+        "total_execution_notional": total_execution_notional,
         "estimated_net_spread": estimated_net_spread_per_unit,
         "total_estimated_net_profit": total_estimated_net_profit,
         "fee_schedule_version": sched.version,
         "fee_schedule_source": sched.source,
         "rounding_rule": sched.kalshi_rounding_rule,
-        "is_payoff_parity_strategy": long_both or short_both
+        "is_payoff_parity_strategy": long_both or short_both,
+        "is_guaranteed_profit": False,
+        "risk_disclosure": "Subject to execution legging delays, partial fills, capital lockup, and oracle settlement divergence."
     }

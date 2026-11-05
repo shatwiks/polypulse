@@ -149,25 +149,27 @@ All microbenchmarks were measured with `scripts/benchmark_cross_venue.py` execut
 
 | Microbenchmark Task | Iterations / Sample | Throughput | Mean Latency | Execution Model |
 | :--- | :--- | :--- | :--- | :--- |
-| **Canonical Quote Normalization** | 100,000 iterations | **56,083.34 ops/sec** | 17.83 us/op | Millionth-tick integer scaling & synthetic quote synthesis |
-| **Depth Ladder VWAP Kernel (5 Levels)** | 100,000 iterations | **355,224.52 ops/sec** | **2.82 us/op** | Vectorized multi-tier orderbook depth traversal |
-| **Versioned Fee Schedule Engine (`v2026.2`)** | 100,000 iterations | **67,339.25 ops/sec** | 14.85 us/op | Kalshi CFTC series multiplier + ceil-cent rounding + Poly taker |
-| **Full Scanner Evaluation (8 States)** | 20,000 pairs | **13,125.86 pairs/sec** | 76.19 us/pair | Full pair gating, freshness, VWAP, fees, and state classification |
+| **Canonical Quote Normalization** | 100,000 iterations | **81,324.05 ops/sec** | 12.30 us/op | Millionth-tick integer scaling & synthetic quote synthesis |
+| **Depth Ladder VWAP Kernel (5 Levels)** | 100,000 iterations | **331,460.47 ops/sec** | **3.02 us/op** | Vectorized multi-tier orderbook depth traversal |
+| **Versioned Fee Schedule Engine (`v2026.2`)** | 100,000 iterations | **50,538.38 ops/sec** | 19.79 us/op | Dynamic Polymarket category fee + Kalshi CFTC multiplier + ceil-cent rounding + dual-leg slippage |
+| **Full Scanner Evaluation (8 States)** | 50,000 pairs | **15,462.81 pairs/sec** | 64.67 us/pair | Full pair gating, freshness, VWAP, bidirectional fees, and state classification |
 
 > [!NOTE]
 > **Benchmarking Scope Transparency**: Microbenchmarks 1–4 evaluate synthetic in-memory test fixtures to measure raw algorithmic execution capacity without network I/O. PolyPulse Phase 6 is purely an intelligence and analytics engine; zero live exchange orders are executed.
 
-### 6.2 ClickHouse Historical Cross-Venue Analytics Latency
+### 6.2 ClickHouse Historical Cross-Venue Analytics Latency (Populated Dataset)
 
-Historical cross-venue queries were benchmarked against ClickHouse 25.8 in Docker using 10 repeated measurements per query pattern:
+To avoid using empty-table response times as proof of analytical performance, historical cross-venue queries were benchmarked against a populated dataset (**5,000 spread observations** and **2,500 arbitrage opportunities** across 4 representative market pairs spanning 24 hours).
 
-| Historical Query Function | Target Table / View | p50 Latency | p95 Latency | Mean Latency | ClickHouse Server Time |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`top_spread_pairs`** | `spread_observations FINAL` | **33.20 ms** | 42.03 ms | 33.49 ms | 4.13 ms |
-| **`opportunity_frequency`** | `arbitrage_opportunities FINAL` | **27.59 ms** | 37.04 ms | 28.73 ms | 3.85 ms |
-| **`duration_stats`** | `arbitrage_opportunities FINAL` | **24.75 ms** | 26.56 ms | 24.24 ms | 3.20 ms |
-| **`venue_comparison`** | `cross_venue_quotes FINAL` | **21.29 ms** | 25.80 ms | 21.68 ms | 2.90 ms |
-| **`quote_freshness`** | `cross_venue_quotes FINAL` | **22.00 ms** | 25.50 ms | 22.60 ms | 2.85 ms |
+Measurements were taken across 10 repeated executions per query pattern using `execute_query_with_telemetry` to record both server execution times from `X-ClickHouse-Summary` and end-to-end client RTT:
+
+| Historical Query Function | Target Table / View | Rows Read | Bytes Read | ClickHouse Server p50 / p95 | Client RTT p50 / p95 | Rows Returned |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **`top_spread_pairs`** | `spread_observations FINAL` | **5,000** | 577,592 B | **14.1 ms** / 346.5 ms | **27.1 ms** / 360.8 ms | 4 pairs |
+| **`opportunity_frequency`** | `spread_observations FINAL` | **5,000** | 415,055 B | **16.5 ms** / 74.7 ms | **30.9 ms** / 91.3 ms | 4 rows |
+| **`duration_stats`** | `arbitrage_opportunities FINAL` | **2,500** | 291,520 B | **10.9 ms** / 13.0 ms | **22.7 ms** / 28.1 ms | 1 summary |
+| **`venue_comparison`** | `arbitrage_opportunities FINAL` | **2,500** | 329,338 B | **12.6 ms** / 65.3 ms | **25.8 ms** / 76.8 ms | 2 venue pairs |
+| **`quote_freshness`** | `spread_observations FINAL` | **5,000** | 100,000 B | **9.3 ms** / 99.7 ms | **25.0 ms** / 116.1 ms | 1 summary |
 
 ### 6.3 Root-Cause Analysis: Resolution of ~1-Second Query Latencies
 Early Phase 6 benchmark drafts observed query latencies of approximately 1,035–1,136 ms. A database correctness audit revealed two client-side networking bottlenecks rather than database engine limits:
@@ -176,7 +178,7 @@ Early Phase 6 benchmark drafts observed query latencies of approximately 1,035�
 
 **Optimization & Verification**:
 - Replaced ephemeral client creation with a persistent connection pool (`_get_client()` with keep-alive limits of 20 connections) and normalized endpoint URLs to `127.0.0.1`.
-- End-to-end round-trip latency dropped from **1,035 ms down to 25.99 ms p50** (a **40x speedup**), matching ClickHouse's internal server-side elapsed time of **4.13 ms**.
+- End-to-end round-trip latency dropped from **1,035 ms down to ~25 ms p50** (a **40x speedup**), with ClickHouse server execution p50 consistently around **9–16 ms** across thousands of scanned rows.
 
 ### 6.4 Reproducible Cross-Venue Execution
 ```powershell

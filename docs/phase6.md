@@ -108,19 +108,42 @@ No cross-venue opportunity is "riskless" or "guaranteed":
 
 ### 3.3 Net Spread & Regulatory Fee Haircut Engine
 
-Gross spreads are adjusted for regulatory and venue taker fee schedules:
-$$\text{Net Spread} = \text{Gross Spread} - \text{Fee}_{\text{poly}} - \text{Fee}_{\text{kalshi}} - \text{Slippage Buffer}$$
+Gross spreads are adjusted for regulatory and venue taker fee schedules across both execution legs:
+$$\text{Net Spread} = \text{Gross Spread} - \text{Fee}_{\text{buy\_venue}} - \text{Fee}_{\text{sell\_venue}} - \text{Slippage}_{\text{both\_legs}}$$
 
 - **Kalshi Official CFTC Taker Fee (`v2026.2`)**:
   Calculated per transaction based on series multipliers and rounded up to the nearest whole cent:
   $$\text{fee\_cents} = \min\left(\lceil \text{multiplier} \times C \times P \times (1 - P) \times 100 \rceil, \text{max\_fee} \times 100 \times C\right)$$
   - Standard series (`FED`, `INTRATE`, `CPI`, `REC`, `POL`): multiplier **$0.07$ (7%)**, capped at $\$0.02$ per contract.
   - Index series (`INDEX`, `SPX`, `NASDAQ`): multiplier **$0.035$ (3.5%)**, capped at $\$0.0175$ per contract.
-  - Minimum fee: $\$0.01$ per executed order.
-- **Polymarket Dynamic Taker Fee**:
-  - Baseline standard binary markets: $0.0\text{ bps}$.
-  - Specialized / 15-minute crypto markets: dynamic rate (10–50 bps) read from market metadata.
-- **Estimated Slippage Buffer**: 10 bps ($0.0010$) default model.
+  - Rounding rule: `ceil_whole_cents` at order level; minimum fee: $\$0.01$ per executed order.
+- **Polymarket Dynamic & Category Fee Model**:
+  Polymarket is not universally fee-free. Taker fees are resolved per-market according to active schedule and category defaults:
+  - **Finance / Rate Derivatives** (`finance`): 20.0 bps taker fee ($0.0020 \times P_{\text{exec}}$), fees enabled.
+  - **Economics / Macro Indicators** (`economics`): 15.0 bps taker fee ($0.0015 \times P_{\text{exec}}$), fees enabled.
+  - **Politics / Elections** (`politics`): 10.0 bps taker fee ($0.0010 \times P_{\text{exec}}$), fees enabled.
+  - **Geopolitics / Baseline CLOB** (`geopolitics`, `default`): 0.0 bps fee-free.
+  - Dynamic rate overrides read from market metadata take precedence when present.
+- **Estimated Slippage Across Both Execution Legs**:
+  Cross-venue execution requires entering two distinct market legs. The slippage buffer ($S_{\text{bps}} = 10\text{ bps}$) is applied per leg across each leg's notional value:
+  $$\text{Slippage}_{\text{buy}} = P_{\text{buy}} \times \frac{S_{\text{bps}}}{10{,}000} \times Q, \quad \text{Slippage}_{\text{sell}} = P_{\text{sell}} \times \frac{S_{\text{bps}}}{10{,}000} \times Q$$
+  $$\text{Total Slippage Cost} = \text{Slippage}_{\text{buy}} + \text{Slippage}_{\text{sell}}$$
+- **Bidirectional Execution & Worked Examples**:
+  - **Direction 1 (Long Poly / Short Kalshi)**: 100 contracts, Finance market. Poly Ask: 0.40, Kalshi Bid: 0.46 (`FED` series).
+    - Gross Spread: $\$0.46 - \$0.40 = +\$0.06$ ($\$6.00$ on 100 contracts).
+    - Poly Taker Fee (20 bps): $100 \times 0.40 \times 0.0020 = \$0.08$.
+    - Kalshi Taker Fee (7%, ceil cents): $\lceil 100 \times 0.07 \times 0.46 \times 0.54 \times 100 \rceil / 100 = \$1.74$.
+    - Total Known Fees: $\$1.82$; Net Profit after Fees: $\$4.18$.
+    - Two-Leg Slippage: Buy leg $\$0.040$ + Sell leg $\$0.046$ = $\$0.086$.
+    - Estimated Net Profit: $\$4.094$ ($\$0.04094$ per contract).
+  - **Direction 2 (Long Kalshi / Short Poly)**: 100 contracts, Politics market. Kalshi Ask: 0.42 (`FED` series), Poly Bid: 0.48.
+    - Gross Spread: $\$0.48 - \$0.42 = +\$0.06$ ($\$6.00$ on 100 contracts).
+    - Kalshi Taker Fee (7%, ceil cents): $\lceil 100 \times 0.07 \times 0.42 \times 0.58 \times 100 \rceil / 100 = \$1.71$.
+    - Poly Taker Fee (10 bps): $100 \times 0.48 \times 0.0010 = \$0.048$.
+    - Total Known Fees: $\$1.758$; Net Profit after Fees: $\$4.242$.
+    - Two-Leg Slippage: Buy leg $\$0.042$ + Sell leg $\$0.048$ = $\$0.090$.
+    - Estimated Net Profit: $\$4.152$ ($\$0.04152$ per contract).
+- **No Guaranteed Profit**: PolyPulse enforces `is_guaranteed_profit = False` across all opportunities. Payoff parity and spreads are subject to execution delays, partial fills, capital lockup, and resolution oracle divergence.
 
 ---
 

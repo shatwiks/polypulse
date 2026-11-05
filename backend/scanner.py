@@ -243,7 +243,9 @@ def compute_cross_venue_spread(
             sell_price=sell_p,
             quantity=max(1.0, executable_qty),
             kalshi_ticker=pair.get("kalshi_ticker"),
-            poly_taker_bps=pair.get("polymarket_taker_bps")
+            poly_taker_bps=pair.get("polymarket_taker_bps"),
+            poly_fees_enabled=pair.get("polymarket_fees_enabled"),
+            poly_category=pair.get("polymarket_category") or pair.get("category")
         )
         net_spread = cost_eval["net_spread"]
         best_spread_bps = cost_eval["gross_spread_bps"]
@@ -302,7 +304,9 @@ def compute_cross_venue_spread(
                 quantity=max(1.0, executable_qty),
                 is_inverse_long_both=True,
                 kalshi_ticker=pair.get("kalshi_ticker"),
-                poly_taker_bps=pair.get("polymarket_taker_bps")
+                poly_taker_bps=pair.get("polymarket_taker_bps"),
+                poly_fees_enabled=pair.get("polymarket_fees_enabled"),
+                poly_category=pair.get("polymarket_category") or pair.get("category")
             )
             strategy_category = "complementary_payoff_parity"
             inventory_requirement = "Long both outcomes: cash capital only (no short inventory required)"
@@ -318,7 +322,9 @@ def compute_cross_venue_spread(
                 quantity=max(1.0, executable_qty),
                 is_inverse_short_both=True,
                 kalshi_ticker=pair.get("kalshi_ticker"),
-                poly_taker_bps=pair.get("polymarket_taker_bps")
+                poly_taker_bps=pair.get("polymarket_taker_bps"),
+                poly_fees_enabled=pair.get("polymarket_fees_enabled"),
+                poly_category=pair.get("polymarket_category") or pair.get("category")
             )
             strategy_category = "complementary_payoff_parity"
             inventory_requirement = "Short both outcomes: requires pre-existing inventory on both venues or 100% cash collateral"

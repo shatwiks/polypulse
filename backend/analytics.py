@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 import math
+import time
 from typing import Any, Dict, List, Optional
 import httpx
 
@@ -79,6 +80,55 @@ class ClickHouseAnalytics:
             self._client = None
             LOG.warning("ClickHouse query error: %s (query=%s)", type(exc).__name__, query[:100])
             return []
+
+    async def execute_query_with_telemetry(self, query: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Executes query and captures client round-trip time (RTT) along with ClickHouse
+        server execution statistics (server_elapsed_ms, rows_read, bytes_read) from headers.
+        """
+        if not self.enabled:
+            return {"data": [], "server_elapsed_ms": 0.0, "rows_read": 0, "bytes_read": 0, "client_rtt_ms": 0.0}
+        request_params = {"query": query.strip(), "default_format": "JSONEachRow"}
+        if params:
+            for k, v in params.items():
+                request_params[f"param_{k}"] = str(v)
+
+        client = self._get_client()
+        t0 = time.perf_counter()
+        try:
+            resp = await client.post(self.url, params=request_params)
+            client_rtt_ms = (time.perf_counter() - t0) * 1000.0
+            resp.raise_for_status()
+            text = resp.text.strip()
+            data = [json.loads(line) for line in text.split("\n") if line.strip()] if text else []
+
+            server_elapsed_ms = 0.0
+            rows_read = 0
+            bytes_read = 0
+            summary_raw = resp.headers.get("x-clickhouse-summary")
+            if summary_raw:
+                try:
+                    summary = json.loads(summary_raw)
+                    server_elapsed_ms = float(summary.get("elapsed_ns", 0)) / 1_000_000.0
+                    rows_read = int(summary.get("read_rows", 0))
+                    bytes_read = int(summary.get("read_bytes", 0))
+                except Exception:
+                    pass
+
+            return {
+                "data": data,
+                "client_rtt_ms": client_rtt_ms,
+                "server_elapsed_ms": server_elapsed_ms,
+                "rows_read": rows_read,
+                "bytes_read": bytes_read
+            }
+        except httpx.HTTPStatusError as exc:
+            LOG.warning("ClickHouse query error: %s - %s (query=%s)", exc.response.status_code, exc.response.text, query[:150])
+            return {"data": [], "server_elapsed_ms": 0.0, "rows_read": 0, "bytes_read": 0, "client_rtt_ms": (time.perf_counter() - t0) * 1000.0}
+        except (RuntimeError, httpx.HTTPError, OSError) as exc:
+            self._client = None
+            LOG.warning("ClickHouse query error: %s (query=%s)", type(exc).__name__, query[:100])
+            return {"data": [], "server_elapsed_ms": 0.0, "rows_read": 0, "bytes_read": 0, "client_rtt_ms": (time.perf_counter() - t0) * 1000.0}
 
     async def get_market_summary(self, market_id: str, venue: Optional[str] = None, window: str = "24h") -> Dict[str, Any]:
         """Calculates 24h volume, VWAP, trade count, high/low/close, and current quote over deduplicated trades."""
