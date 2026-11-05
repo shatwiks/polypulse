@@ -1,6 +1,6 @@
 {
   "audit_name": "Phase 6 Cross-Venue Intelligence and Arbitrage Scanner Correctness & Ground-Truth Audit",
-  "timestamp_utc": "2026-11-05T15:35:22.000+00:00",
+  "timestamp_utc": "2026-11-05T17:23:26+00:00",
   "environment": {
     "os": "Windows 11",
     "python_version": "3.14.3",
@@ -9,11 +9,22 @@
     "clickhouse_version": "25.8.1.1818"
   },
   "deterministic_test_proof": {
-    "total_repo_tests_collected": 104,
-    "tests_passed": 103,
+    "total_repo_tests_collected": 120,
+    "tests_passed": 119,
     "tests_skipped": 1,
     "tests_failed": 0,
     "pass_rate_percentage": 100.0,
+    "command": ".venv/Scripts/python -m pytest tests -q -p no:cacheprovider",
+    "elapsed_seconds": 81.27,
+    "skip_reason": "Live ClickHouse service unavailable for tests/test_clickhouse_live.py",
+    "runtime_fee_fix_suite": {
+      "file": "tests/test_phase6_fee_runtime.py",
+      "tests_collected": 16,
+      "tests_passed": 16,
+      "tests_failed": 0,
+      "evidence_type": "deterministic fixtures and mocked CLOB HTTP; no live fee-curve response",
+      "cases": ["v2026.2_default", "runtime_scanner_version", "kalshi_cent_rounding", "sports_coefficient_0.05", "token_curve_precedence", "clob_fd_r_e_to", "nondefault_exponent", "unknown_configuration_fail_closed", "both_direct_directions", "both_inverse_payoff_parity_strategies"]
+    },
     "cross_venue_suite": {
       "file": "tests/test_cross_venue.py",
       "tests_collected": 27,
@@ -78,17 +89,18 @@
     },
     "cpp_engine_suite": {
       "command": "python scripts/build_engine.py --test",
-      "verdict": "ALL ASSERTIONS PASSED"
+      "verdict": "ALL ASSERTIONS PASSED; rerun for runtime fee fix"
     },
     "frontend_build_suite": {
       "command": "npm --prefix frontend run build",
       "modules_transformed": 1578,
       "errors": 0,
       "gzip_bundle_size_kb": 85.65,
-      "verdict": "PASSED"
+      "verdict": "PASSED; rerun for runtime fee fix"
     }
   },
   "empirical_benchmarks": {
+    "provenance_note": "Historical Phase 6 measurements. Fee engine and scanner throughput were not rerun after the runtime fee fix; do not treat them as current throughput.",
     "hardware": "AMD Ryzen (AMD64 Family 25 Model 68) / Windows 11 / NVMe SSD",
     "book_normalization": {
       "iterations": 100000,
@@ -167,6 +179,7 @@
     ]
   },
   "live_venue_connectivity_audit": {
+    "provenance_note": "Historical connectivity audit retained. Live CLOB fee details were not requested or verified in this runtime fee fix.",
     "polymarket": {
       "status": "connected",
       "server_timestamp": "1793890817",
@@ -179,5 +192,6 @@
       "detail": "Requires production RSA keypair credentials. Offline deterministic fixtures verified."
     }
   },
-  "verdict": "AUDITED_AND_VERIFIED_ACCURATE"
+  "verdict": "CURRENT_DETERMINISTIC_GATES_PASSED_LIVE_FEE_CURVE_UNVERIFIED",
+  "historical_verdict": "AUDITED_AND_VERIFIED_ACCURATE"
 }

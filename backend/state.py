@@ -10,13 +10,17 @@ from datetime import datetime, timezone
 from backend.engine import Book, PRICE_SCALE, QUANTITY_SCALE
 from backend.events import price_ticks, quantity_units
 from backend.scanner import compute_cross_venue_spread
+from backend.fees import DEFAULT_FEE_VERSION
 
 LOG = logging.getLogger(__name__)
 
 
 class MarketState:
-    def __init__(self, journal, pairs=None, mode="demo"):
+    def __init__(self, journal, pairs=None, mode="demo", fee_version=DEFAULT_FEE_VERSION):
         self.journal = journal
+        self.mode = mode
+        self.fee_version = fee_version
+        self.token_fee_configs = {}
         self.books = {}
         self.listeners = set()
         self.pairs = pairs or []
@@ -105,7 +109,9 @@ class MarketState:
         if stale or not metadata.get("valid", False):
             view.update({"bids": [], "asks": [], "best_bid": None, "best_ask": None,
                          "buy_vwap_10": None, "imbalance": 0})
-        return {"venue": venue, "market_id": market_id, **view, **metadata,
+        fee_config = ({"token_fee_config": self.token_fee_configs[market_id]}
+                      if venue == "polymarket" and market_id in self.token_fee_configs else {})
+        return {"venue": venue, "market_id": market_id, **view, **metadata, **fee_config,
                 "valid": bool(metadata.get("valid", False)) and not stale,
                 "stale": stale, "recovery_status": "stale" if stale else metadata.get("recovery_status", "ready")}
 
@@ -118,7 +124,8 @@ class MarketState:
         for pair in self.journal.contract_pairs(verified_only=True):
             left = self.get("polymarket", pair["polymarket_asset_id"])
             right = self.get("kalshi", pair["kalshi_ticker"])
-            spread_data = compute_cross_venue_spread(pair, left, right, now_dt=now_dt)
+            spread_data = compute_cross_venue_spread(pair, left, right, now_dt=now_dt,
+                                                      fee_version=self.fee_version)
             if spread_data is None:
                 continue
             if opportunities_only and not spread_data.get("is_arbitrage"):

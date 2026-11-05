@@ -143,6 +143,8 @@ python scripts/benchmark_clickhouse.py
 
 Phase 6 introduces algorithmic price normalization across binary prediction venues, multi-tier depth VWAP kernels, versioned regulatory fee calculations, and an 8-state opportunity machine.
 
+**2026-11-05 runtime fee fix:** The figures in this section are earlier synthetic or populated ClickHouse measurements. The fee engine and scanner throughput figures were **not remeasured** after switching the runtime default to `v2026.2` and adding the CLOB `fd.r/e/to` curve. They must not be presented as current throughput for the modified code. The current validation is functional: 119 Python tests passed, one live ClickHouse test skipped, C++ assertions passed, and the frontend built. No live orders or current fee-engine benchmark measurements were made.
+
 All microbenchmarks were measured with `scripts/benchmark_cross_venue.py` executing on Windows 11 / AMD Ryzen (AMD64 Family 25 Model 68) with Python 3.14 and ClickHouse 25.8.
 
 ### 6.1 In-Memory Engine Microbenchmarks

@@ -1,23 +1,26 @@
 """
 PolyPulse Phase 6: Versioned Fee & Execution Cost Engine.
 Provides official fee schedules, series-specific multipliers, regulatory rounding rules,
-official Polymarket non-linear taker fee formulas (C * feeRate * P * (1 - P)),
+official Polymarket non-linear taker fee curves (C * r * [P * (1 - P)] ** e),
 token-specific API fee configuration normalization, and multi-leg net spread calculations
 for Polymarket and Kalshi binary prediction markets.
 """
+import json
 import logging
 import math
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
+from urllib.parse import quote
 import httpx
 
 LOG = logging.getLogger(__name__)
 
-DEFAULT_FEE_VERSION = "v2026.1"
+DEFAULT_FEE_VERSION = "v2026.2"
 
 # Official Polymarket API endpoints for token-specific market fee inspection
 POLYMARKET_GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 POLYMARKET_CLOB_FEE_RATE_URL = "https://clob.polymarket.com/fee-rate"
+POLYMARKET_CLOB_MARKETS_URL = "https://clob.polymarket.com/clob-markets"
 
 # In-memory cache of resolved token-specific Polymarket fee configurations
 _TOKEN_FEE_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -37,8 +40,8 @@ KALSHI_SERIES_MULTIPLIERS = {
     "DEFAULT": 0.07
 }
 
-# Official Polymarket Taker Fee Formula:
-#   fee = round(C * feeRate * P * (1 - P), 5)
+# Default Polymarket category taker fee curve (e = 1):
+#   fee = round(C * feeRate * [P * (1 - P)] ** e, 5)
 # where feeRate is a dimensionless formula coefficient (NOT a flat percentage of contract notional).
 # Official Category Coefficients (per Polymarket Fee Schedule):
 #   - Finance     : 0.04  (finance_prices_fees)
@@ -46,7 +49,7 @@ KALSHI_SERIES_MULTIPLIERS = {
 #   - Economics   : 0.05  (economics_fees)
 #   - Geopolitics : 0.00  (fee-free)
 #   - Crypto      : 0.07  (crypto_fees_v2)
-#   - Sports      : 0.03  (sports_fees_v2)
+#   - Sports      : 0.05  (sports_fees_v2)
 #   - Tech        : 0.04  (tech_fees)
 #   - Culture     : 0.05  (culture_fees)
 #   - Weather     : 0.05  (weather_fees)
@@ -89,10 +92,10 @@ POLYMARKET_CATEGORY_FEES: Dict[str, Dict[str, Any]] = {
     },
     "sports": {
         "fees_enabled": True,
-        "fee_rate": 0.03,
-        "taker_bps": 300.0,
+        "fee_rate": 0.05,
+        "taker_bps": 500.0,
         "fee_type": "sports_fees_v2",
-        "description": "Sports markets (feeRate = 0.03)"
+        "description": "Sports markets (feeRate = 0.05)"
     },
     "tech": {
         "fees_enabled": True,
@@ -206,7 +209,7 @@ FEE_SCHEDULES: Dict[str, FeeScheduleVersion] = {
         source="Kalshi Official CFTC Fee Schedule (Appendix B) / Polymarket Official Category Fee Schedule",
         polymarket_maker_bps=0.0,
         polymarket_taker_bps=0.0,
-        polymarket_taker_formula="round(C * feeRate * P * (1 - P), 5)",
+        polymarket_taker_formula="round(C * r * (P * (1 - P)) ** e, 5)",
         polymarket_rounding_decimals=5,
         polymarket_settlement_fee_pct=0.0,
         kalshi_maker_bps=0.0,
@@ -215,7 +218,7 @@ FEE_SCHEDULES: Dict[str, FeeScheduleVersion] = {
         kalshi_min_fee=0.01,        # $0.01 minimum fee per executed order
         kalshi_rounding_rule="ceil_whole_cents",  # CFTC official order-level cent ceiling
         default_slippage_bps=10.0,
-        notes="Official Kalshi CFTC series multipliers & integer cent ceiling + Polymarket C * feeRate * P * (1 - P) rounded to 5 decimal places."
+        notes="Official Kalshi CFTC series multipliers & integer cent ceiling + Polymarket market-specific r/e/taker-only fee curve rounded to 5 decimals."
     )
 }
 
@@ -245,8 +248,9 @@ def normalize_polymarket_fee_rate(raw_value: Any, unit: str = "auto") -> Optiona
          (e.g., Finance = 0.04, Politics = 0.04, Economics = 0.05, Geopolitics = 0.00).
        - Valid range: 0.0 <= raw_value <= 1.0.
     2. `unit="bps"` (or `"basis_points"`):
-       - Used by Polymarket CLOB `/fee-rate?token_id=<id>` (`base_fee`, `taker_base_fee`, `fee_rate_bps`).
-       - Converted to dimensionless coefficient via:
+       - Used to interpret Polymarket CLOB `/fee-rate?token_id=<id>` basis-point metadata
+         (`base_fee`, `taker_base_fee`, `fee_rate_bps`). This metadata is not a complete fee curve.
+       - Numeric conversion, when separately needed, is:
            feeRate = raw_value_bps / 10_000.0
          (e.g., 400 bps -> 0.04, 500 bps -> 0.05, 0 bps -> 0.00).
        - Valid range: 0.0 <= raw_value <= 10_000.0.
@@ -292,9 +296,11 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
     1. Gamma Market Payload (`/markets?clob_token_ids=<token_id>`):
        `{"feesEnabled": True, "feeType": "finance_prices_fees", "feeSchedule": {"rate": 0.04, "exponent": 1}}`
        or `{"feesEnabled": False, "feeType": None, "feeSchedule": None}`
-    2. CLOB Fee-Rate Payload (`/fee-rate?token_id=<token_id>`):
-       `{"base_fee": 400}` or `{"fee_rate_bps": 400}` (normalized via `base_fee / 10_000.0 -> 0.04`)
-    3. Normalized / Direct Token Config:
+    2. CLOB Market Payload (`/clob-markets/{condition_id}`):
+       `{"fd": {"r": 0.05, "e": 1, "to": true}}`
+    3. CLOB Fee-Rate Payload (`/fee-rate?token_id=<token_id>`):
+       `{"base_fee": 400}` is basis-point metadata, not a complete fee curve.
+    4. Normalized / Direct Token Config:
        `{"fees_enabled": True, "fee_rate": 0.04}`
 
     If the payload is missing, malformed, or contains invalid values, returns `fee_status="unknown"`.
@@ -309,6 +315,11 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
             "unit_conversion": "none",
             "source": "invalid_or_empty_api_payload"
         }
+
+    # Preserve an earlier failed resolution when a normalized config is passed back
+    # through the scanner. A category fallback must not make it executable.
+    if api_payload.get("fee_status") == "unknown":
+        return dict(api_payload)
 
     # Check explicit feesEnabled / fees_enabled boolean
     fees_enabled_raw = api_payload.get("feesEnabled")
@@ -326,6 +337,45 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
             "source": "invalid_fees_enabled_flag"
         }
 
+    # CLOB market fee details: r is the curve coefficient, e is the exponent
+    # on p*(1-p), and to records whether the curve is taker-only.
+    if "fd" in api_payload:
+        fd = api_payload["fd"]
+        if not isinstance(fd, dict) or not all(k in fd for k in ("r", "e", "to")):
+            return {"fee_status": "unknown", "fees_enabled": None, "fee_rate": None,
+                    "fee_exponent": None, "taker_only": None, "source": "invalid_clob_fd"}
+        rate = normalize_polymarket_fee_rate(fd["r"], unit="coefficient")
+        try:
+            exponent = float(fd["e"]) if not isinstance(fd["e"], bool) else float("nan")
+        except (TypeError, ValueError):
+            exponent = float("nan")
+        taker_only = fd["to"]
+        if (rate is None or not math.isfinite(exponent) or exponent < 0
+                or not isinstance(taker_only, bool)
+                or (fees_enabled_raw is False and rate > 0)):
+            return {"fee_status": "unknown", "fees_enabled": None, "fee_rate": None,
+                    "fee_exponent": None, "taker_only": None, "source": "invalid_clob_fd"}
+        enabled = rate > 0 and fees_enabled_raw is not False
+        return {"fee_status": "known", "fees_enabled": enabled,
+                "fee_rate": rate if enabled else 0.0,
+                "fee_exponent": exponent, "taker_only": taker_only,
+                "fd": {"r": rate, "e": exponent, "to": taker_only},
+                "condition_id": api_payload.get("condition_id"),
+                "taker_bps": round(rate * 10_000, 4),
+                "category": str(api_payload.get("category") or "clob_market").lower(),
+                "unit_conversion": "coefficient_direct", "source": "polymarket_clob_market_fd"}
+
+    # A /fee-rate base_fee alone remains metadata even if the payload also
+    # happens to carry a fee-disabled flag or fee-type label.
+    if "base_fee" in api_payload and "feeSchedule" not in api_payload and "fee_schedule" not in api_payload:
+        rate = normalize_polymarket_fee_rate(api_payload["base_fee"], unit="bps")
+        return {"fee_status": "unknown", "fees_enabled": None, "fee_rate": None,
+                "fee_exponent": None, "taker_only": None,
+                "base_fee_bps": float(api_payload["base_fee"]) if rate is not None else None,
+                "base_fee_unit": "basis_points", "taker_bps": None,
+                "category": "unknown", "unit_conversion": "basis_points_only",
+                "source": "polymarket_clob_base_fee_incomplete_curve"}
+
     # If explicitly fee-disabled on the market
     if fees_enabled_raw is False:
         return {
@@ -340,9 +390,17 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
 
     # 1. Check nested `feeSchedule` / `fee_schedule` from Gamma / Market API
     fee_schedule = api_payload.get("feeSchedule") or api_payload.get("fee_schedule")
-    if isinstance(fee_schedule, dict) and "rate" in fee_schedule:
+    if fee_schedule is not None:
+        if not isinstance(fee_schedule, dict) or "rate" not in fee_schedule:
+            return {"fee_status": "unknown", "fees_enabled": None, "fee_rate": None,
+                    "source": "invalid_api_fee_schedule"}
         rate = normalize_polymarket_fee_rate(fee_schedule.get("rate"), unit="coefficient")
-        if rate is None:
+        try:
+            exponent = float(fee_schedule.get("exponent")) if not isinstance(fee_schedule.get("exponent"), bool) else float("nan")
+        except (TypeError, ValueError):
+            exponent = float("nan")
+        taker_only = fee_schedule.get("takerOnly")
+        if rate is None or not math.isfinite(exponent) or exponent < 0 or not isinstance(taker_only, bool):
             return {
                 "fee_status": "unknown",
                 "fees_enabled": None,
@@ -360,6 +418,8 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
             "fee_status": "known",
             "fees_enabled": enabled,
             "fee_rate": active_rate,
+            "fee_exponent": exponent,
+            "taker_only": taker_only,
             "taker_bps": round(active_rate * 10_000.0, 4),
             "category": cat,
             "unit_conversion": "coefficient_direct",
@@ -371,7 +431,12 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
         raw_r = api_payload.get("fee_rate") if "fee_rate" in api_payload else api_payload.get("rate")
         unit_hint = str(api_payload.get("unit") or "coefficient")
         rate = normalize_polymarket_fee_rate(raw_r, unit=unit_hint)
-        if rate is None:
+        try:
+            exponent = float(api_payload.get("fee_exponent", 1))
+        except (TypeError, ValueError):
+            exponent = float("nan")
+        taker_only = api_payload.get("taker_only", True)
+        if rate is None or not math.isfinite(exponent) or exponent < 0 or not isinstance(taker_only, bool):
             return {
                 "fee_status": "unknown",
                 "fees_enabled": None,
@@ -387,6 +452,8 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
             "fee_status": "known",
             "fees_enabled": enabled,
             "fee_rate": active_rate,
+            "fee_exponent": exponent,
+            "taker_only": taker_only,
             "taker_bps": round(active_rate * 10_000.0, 4),
             "category": str(api_payload.get("category") or "token_config").lower(),
             "unit_conversion": f"normalized_from_{unit_hint}",
@@ -412,30 +479,19 @@ def normalize_polymarket_api_fee_config(api_payload: Any) -> Dict[str, Any]:
                 "source": "polymarket_api_fee_type"
             }
 
-    # 4. Check CLOB basis-point fields (`fee_rate_bps`, `taker_bps`, `base_fee`, `taker_base_fee`)
+    # 4. /fee-rate supplies basis points only. It cannot establish the fee-curve
+    # exponent or taker-only status and must never authorize execution alone.
     for bps_key in ("fee_rate_bps", "taker_bps", "base_fee", "taker_base_fee", "takerBaseFee"):
         if bps_key in api_payload and api_payload[bps_key] is not None:
-            rate = normalize_polymarket_fee_rate(api_payload[bps_key], unit="bps")
-            if rate is None:
-                return {
-                    "fee_status": "unknown",
-                    "fees_enabled": None,
-                    "fee_rate": None,
-                    "taker_bps": None,
-                    "category": "unknown",
-                    "unit_conversion": f"invalid_{bps_key}_bps",
-                    "source": "invalid_api_bps"
-                }
-            enabled = bool(rate > 0.0) if fees_enabled_raw is None else bool(fees_enabled_raw and rate > 0.0)
-            active_rate = rate if enabled else 0.0
+            bps = api_payload[bps_key]
+            rate = normalize_polymarket_fee_rate(bps, unit="bps")
             return {
-                "fee_status": "known",
-                "fees_enabled": enabled,
-                "fee_rate": active_rate,
-                "taker_bps": round(active_rate * 10_000.0, 4),
-                "category": str(api_payload.get("category") or "clob_token_bps").lower(),
-                "unit_conversion": "bps_div_10000",
-                "source": f"polymarket_clob_{bps_key}"
+                "fee_status": "unknown", "fees_enabled": None, "fee_rate": None,
+                "fee_exponent": None, "taker_only": None,
+                "base_fee_bps": float(bps) if rate is not None else None,
+                "base_fee_unit": "basis_points", "taker_bps": None,
+                "category": "unknown", "unit_conversion": "basis_points_only",
+                "source": f"polymarket_clob_{bps_key}_incomplete_curve"
             }
 
     return {
@@ -453,11 +509,12 @@ def fetch_polymarket_token_fee_config(
     token_id: str,
     client: Optional[httpx.Client] = None,
     timeout: float = 5.0,
-    use_cache: bool = True
+    use_cache: bool = True,
+    condition_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetches the actual token-specific market fee configuration from the official
-    Polymarket Gamma / CLOB APIs and normalizes the fee rate units.
+    Polymarket Gamma / CLOB APIs and retains the complete market fee curve.
     Caches resolved configurations by token_id.
     """
     if not token_id or not str(token_id).strip():
@@ -470,27 +527,54 @@ def fetch_polymarket_token_fee_config(
     owns_client = client is None
     http_client = client or httpx.Client(timeout=timeout)
     try:
-        # 1. Query Gamma Markets API by clob_token_ids for authoritative `feesEnabled` and `feeSchedule.rate`
-        resp_gamma = http_client.get(POLYMARKET_GAMMA_MARKETS_URL, params={"clob_token_ids": tid})
-        if resp_gamma.status_code == 200:
-            data = resp_gamma.json()
-            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                norm = normalize_polymarket_api_fee_config(data[0])
+        gamma_market = None
+        if not condition_id:
+            resp_gamma = http_client.get(POLYMARKET_GAMMA_MARKETS_URL, params={"clob_token_ids": tid})
+            if resp_gamma.status_code == 200:
+                data = resp_gamma.json()
+                if isinstance(data, list):
+                    def matches_token(market: Dict[str, Any]) -> bool:
+                        token_ids = market.get("clobTokenIds", market.get("clob_token_ids"))
+                        if isinstance(token_ids, str):
+                            try:
+                                token_ids = json.loads(token_ids)
+                            except json.JSONDecodeError:
+                                token_ids = [token_ids]
+                        return isinstance(token_ids, list) and tid in [str(value) for value in token_ids]
+
+                    gamma_market = next((m for m in data if isinstance(m, dict) and matches_token(m)), None)
+                    # Some Gamma responses omit clobTokenIds after filtering.
+                    if (gamma_market is None and len(data) == 1 and isinstance(data[0], dict)
+                            and "clobTokenIds" not in data[0] and "clob_token_ids" not in data[0]):
+                        gamma_market = data[0]
+                    condition_id = (gamma_market or {}).get("conditionId") or (gamma_market or {}).get("condition_id")
+
+        # The CLOB market response carries the authoritative fee curve.
+        if condition_id:
+            resp_market = http_client.get(f"{POLYMARKET_CLOB_MARKETS_URL}/{quote(str(condition_id), safe='')}")
+            if resp_market.status_code == 200:
+                market_data = resp_market.json()
+                norm = normalize_polymarket_api_fee_config(market_data)
+                norm["condition_id"] = condition_id
                 if norm["fee_status"] == "known":
                     _TOKEN_FEE_CACHE[tid] = norm
-                    return norm
+                return norm
 
-        # 2. Fallback to CLOB `/fee-rate?token_id=<id>` endpoint
+        # Gamma's complete feeSchedule is a usable fallback when CLOB is unavailable.
+        if gamma_market is not None:
+            norm = normalize_polymarket_api_fee_config(gamma_market)
+            if norm["fee_status"] == "known":
+                _TOKEN_FEE_CACHE[tid] = norm
+                return norm
+
+        # /fee-rate is retained as basis-point metadata only.
         resp_clob = http_client.get(POLYMARKET_CLOB_FEE_RATE_URL, params={"token_id": tid})
         if resp_clob.status_code == 200:
             clob_data = resp_clob.json()
             if isinstance(clob_data, dict):
-                norm = normalize_polymarket_api_fee_config(clob_data)
-                if norm["fee_status"] == "known":
-                    _TOKEN_FEE_CACHE[tid] = norm
-                    return norm
+                return normalize_polymarket_api_fee_config(clob_data)
     except Exception as exc:
-        LOG.debug("Failed to fetch Polymarket fee config for token %s: %s", tid, exc)
+        LOG.warning("Failed to fetch Polymarket fee config for token %s: %s", tid, type(exc).__name__)
     finally:
         if owns_client:
             http_client.close()
@@ -657,7 +741,7 @@ def calculate_venue_taker_fee(
     """
     Calculates exact known taker fee for an order leg.
     - Kalshi: Official CFTC cent-rounding rules (`ceil_whole_cents`) and series multipliers.
-    - Polymarket: Official non-linear formula `fee = round(C * feeRate * P * (1 - P), 5)`.
+    - Polymarket: Official market curve `fee = round(C * r * [P * (1-P)] ** e, 5)`.
       If the Polymarket fee configuration is missing or invalid, returns `fee_status="unknown"`
       and `total_fee=None`.
     """
@@ -706,16 +790,18 @@ def calculate_venue_taker_fee(
                 "version": sched.version
             }
 
-        # Official Polymarket Taker Fee Formula:
-        #   fee = round(C * feeRate * P * (1 - P), 5)
+        # Official Polymarket taker fee curve; category fallback has e = 1.
         active_fee_rate = float(poly_rate_info["fee_rate"])
-        raw_total = quantity * active_fee_rate * price * (1.0 - price)
+        exponent = poly_rate_info.get("fee_exponent", 1.0)
+        raw_total = quantity * active_fee_rate * (price * (1.0 - price)) ** exponent
         total = round(raw_total, 5)
         per_unit_rounded = round(total / quantity, 6) if quantity > 0 else 0.0
         return {
             "per_unit_fee": per_unit_rounded,
             "total_fee": total,
             "fee_rate": active_fee_rate,
+            "fee_exponent": exponent,
+            "taker_only": poly_rate_info.get("taker_only"),
             "taker_bps": poly_rate_info["taker_bps"],
             "fees_enabled": True,
             "fee_status": "known",

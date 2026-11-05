@@ -130,7 +130,8 @@ def compute_cross_venue_spread(
     now_dt: Optional[datetime] = None,
     max_quote_age_seconds: float = 10.0,
     max_venue_delta_seconds: float = 5.0,
-    requested_sizes: Optional[List[float]] = None
+    requested_sizes: Optional[List[float]] = None,
+    fee_version: str = DEFAULT_FEE_VERSION,
 ) -> Optional[Dict[str, Any]]:
     """
     Computes depth-aware cross-venue intelligence, state-machine opportunity classification,
@@ -263,6 +264,7 @@ def compute_cross_venue_spread(
         poly_category = left.get("category") or pair.get("polymarket_category") or pair.get("category")
 
         cost_eval = evaluate_net_opportunity_costs(
+            version=fee_version,
             buy_venue=buy_v,
             sell_venue=sell_v,
             buy_price=buy_p,
@@ -338,6 +340,7 @@ def compute_cross_venue_spread(
             opportunity_type = "mint_both_long" if mint_spread > 0 else "none"
             executable_qty = min(poly_ask_qty, kalshi_ask_qty)
             cost_eval = evaluate_net_opportunity_costs(
+                version=fee_version,
                 buy_venue="polymarket",
                 sell_venue="kalshi",
                 buy_price=poly_ask,
@@ -358,6 +361,7 @@ def compute_cross_venue_spread(
             opportunity_type = "merge_both_short" if merge_spread > 0 else "none"
             executable_qty = min(poly_bid_qty, kalshi_bid_qty)
             cost_eval = evaluate_net_opportunity_costs(
+                version=fee_version,
                 buy_venue="polymarket",
                 sell_venue="kalshi",
                 buy_price=poly_bid,
@@ -454,6 +458,7 @@ def compute_cross_venue_spread(
         "net_spread": net_spread,
         "estimated_net_spread": estimated_net_spread,
         "fee_status": fee_status,
+        "fee_version": cost_eval["fee_schedule_version"],
         "poly_fee": poly_fee,
         "kalshi_fee": kalshi_fee,
         "total_net_profit": cost_eval.get("total_net_profit"),

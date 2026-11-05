@@ -3,9 +3,11 @@
 
 **Document Date**: 2026-11-05  
 **Audit Scope**: Phase 6 Stages 1–18 Ground-Truth Audit  
-**Verification Verdict**: **PASSED (Audited & Ground-Truth Verified)**  
+**Verification Verdict**: **Current deterministic and build gates passed; live fee-curve request not verified in this run**
 **Machine-Readable Audit Record**: [`docs/verification/phase6-verification.json`](file:///d:/PROJECTS/Polypulse/docs/verification/phase6-verification.json)  
 **Live Probe Evidence Snapshot**: [`docs/verification/phase6-live-audit.json`](file:///d:/PROJECTS/Polypulse/docs/verification/phase6-live-audit.json)
+
+**Scope of this update**: Fee runtime code and deterministic tests were rerun. The live connectivity and benchmark sections below retain evidence from earlier Phase 6 audits; neither live trading nor a live CLOB `fd` response was verified in this run.
 
 ---
 
@@ -22,8 +24,8 @@ This document establishes the empirical proof and formal ground truth for all Ph
 4. **Execution Cost Realism & Official Polymarket / CFTC Fee Schedules**:
    - **Kalshi (`v2026.2`)**: Taker fees are computed under the official CFTC schedule using series-specific multipliers (`0.07` standard, `0.035` index) and **order-level ceiling rounding to whole cents** (`ceil_whole_cents`).
    - **Polymarket Official Taker Fee Formula**:
-     $$\text{fee} = \text{round}\left(C \times \text{feeRate} \times P \times (1 - P), 5\right)$$
-     where $\text{feeRate}$ is a dimensionless formula coefficient (Finance `0.04`, Politics `0.04`, Economics `0.05`, Geopolitics `0.00`, Crypto `0.07`, Sports `0.03`), NOT a flat percentage of contract notional. Token-specific API fee configurations (`feeSchedule.rate`, `base_fee`) take precedence over category coefficients, and missing/invalid fee configs are classified as `fee_status = "unknown"` (never claiming an executable net spread).
+     $$\text{fee} = \text{round}\left(C \times r \times [P(1 - P)]^e, 5\right)$$
+     where $\text{feeRate}$ is a dimensionless formula coefficient (Finance `0.04`, Politics `0.04`, Economics `0.05`, Geopolitics `0.00`, Crypto `0.07`, Sports `0.05`), NOT a flat percentage of contract notional. The complete token-specific CLOB market curve takes precedence and uses $C \times r \times [P(1-P)]^e$, preserving `fd.r`, `fd.e`, and `fd.to`. `/fee-rate` `base_fee` is basis-point metadata and does not establish the complete curve. Missing or invalid configurations are classified as `fee_status = "unknown"` (never claiming an executable net spread).
 5. **No Guaranteed or Riskless Profit**:
    - Cross-venue execution carries structural risks: **legging risk**, **partial fills** (unhedged directional exposure), **settlement/oracle divergence** (UMA dispute vs. CFTC regulatory ruling), and **capital lockup**.
    - Selling requires pre-existing token inventory or 100% cash collateral ($1.00/contract) to mint complete sets before selling; binary prediction markets do not support naked short selling.
@@ -36,28 +38,21 @@ This document establishes the empirical proof and formal ground truth for all Ph
 ## 2. Automated Test Proof & Full Suite Verification
 
 ### 2.1 Repository Test Suite Execution Summary
-The entire PolyPulse testing harness was executed cleanly with zero failures across Python, C++20, and React TypeScript layers:
+The current fee fix was verified on 2026-11-05 UTC with the complete Python suite, C++20 engine tests, and the React TypeScript production build:
 
 ```
-============================= test session starts =============================
-platform win32 -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0
-rootdir: D:\PROJECTS\Polypulse
-plugins: anyio-4.16.0, requests-mock-1.12.1
-collected 104 items
-
-tests\test_clickhouse_analytics.py ................                      [ 15%]
-tests\test_clickhouse_live.py s                                          [ 16%]
-tests\test_cross_venue.py ...........................                    [ 42%]
-tests\test_phase2.py ...................                                 [ 61%]
-tests\test_phase3.py ..........                                          [ 70%]
-tests\test_pipeline.py ...                                               [ 73%]
-tests\test_wallet_markout.py ............................                [100%]
-
-============= 103 passed, 1 skipped, 1 warning in 71.50s =============
+.venv/Scripts/python -m pytest tests -q -p no:cacheprovider
+119 passed, 1 skipped, 1 warning in 81.27s
+python scripts/build_engine.py --test
+[PASS] All C++20 OrderBook and Microstructure tests PASSED.
+npm --prefix frontend run build
+✓ 1578 modules transformed; production build completed
 ```
 
 ### 2.2 Phase 6 Cross-Venue Unit Suite (`tests/test_cross_venue.py`)
-All 27 cross-venue specific unit and integration tests passed in 3.51 seconds:
+All 27 cross-venue specific unit and integration tests passed as part of the current full suite:
+
+The separate `tests/test_phase6_fee_runtime.py` suite adds 16 deterministic cases: default and configured scanner versions, Kalshi cent rounding, Sports 0.05, token precedence, CLOB `fd` retrieval and parsing, non-default exponent calculation, incomplete/invalid configuration fail-closed behavior, both direct directions, and both inverse payoff-parity strategies. The official CLOB endpoint was exercised through a recorded-shape HTTP mock; no live fee-curve response or trade was observed in this run.
 
 | Test Case Name | Subsystem Verified | Invariant Proven | Result |
 |---|---|---|---|
@@ -111,7 +106,7 @@ dist/assets/stream.worker-BGZ0EJOM.js    0.14 kB
 dist/index.html                          0.37 kB │ gzip:  0.26 kB
 dist/assets/index-ngdlfh5L.css          16.47 kB │ gzip:  4.27 kB
 dist/assets/index-CPUDegqg.js          289.99 kB │ gzip: 85.65 kB
-✓ built in 6.29s
+✓ built in 27.38s
 ```
 
 ---
@@ -261,8 +256,8 @@ python scripts/benchmark_cross_venue.py
 ### 6.3 In-Memory Algorithmic Microbenchmarks
 - **Book Normalization (Millionth Ticks)**: **71,070.79 ops/sec** ($14.070\text{ }\mu\text{s/op}$)
 - **Depth Ladder VWAP Kernel (5 levels)**: **296,430.06 ops/sec** ($3.373\text{ }\mu\text{s/op}$)
-- **Versioned Fee Schedule Engine (`v2026.2`)**: **45,206.64 ops/sec** ($22.121\text{ }\mu\text{s/op}$)
-- **Full 8-State Scanner Evaluation**: **12,675.76 pairs/sec** ($78.891\text{ }\mu\text{s/pair}$)
+- **Versioned Fee Schedule Engine (prior synthetic benchmark)**: **45,206.64 ops/sec** ($22.121\text{ }\mu\text{s/op}$); not remeasured after this fee-curve fix.
+- **Full 8-State Scanner Evaluation (prior synthetic benchmark)**: **12,675.76 pairs/sec** ($78.891\text{ }\mu\text{s/pair}$); not remeasured after this fee-curve fix.
 
 ---
 
@@ -283,12 +278,12 @@ python scripts/benchmark_cross_venue.py
 ================================================================================
 1. Contract Registry Revalidated     : 2 Active, 3 Expired, 1 Rejected (Zero Title-Only)
 2. Real Polymarket uint256 IDs       : Verified & Documented (No Placeholders)
-3. Fee Engine CFTC & Poly Compliance : Poly C*feeRate*P*(1-P) & Kalshi Ceil-Cent Enforced
+3. Fee Engine CFTC & Poly Compliance : Poly C*r*[P*(1-P)]^e & Kalshi Ceil-Cent Enforced (deterministic)
 4. Arbitrage Terminology Corrected   : Payoff Parity vs CTF Minting Distinct; No "Riskless"
 5. Live Venue Connectivity Verified  : Polymarket Live Captured; Kalshi Unconfigured Honest
 6. Benchmark Data Source Separated   : Synthetic Memory Fixtures (0 Live Events in Benchmark)
 7. ClickHouse Query Latency Fixed    : 100 Iters After Warmup -> Server p50=6.5-14.7ms, RTT p50=18.4-27.4ms
-8. Automated Test Pass Rate          : 103 Passed, 1 Skipped (100% Pass Rate)
+8. Automated Test Pass Rate          : 119 Passed, 1 Skipped (current fee fix)
 9. C++20 Microstructure Engine       : All Assertions Passed
 10. React 19 Frontend Production     : 1,578 Modules Built, 0 Errors
 ================================================================================

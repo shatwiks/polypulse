@@ -484,7 +484,7 @@ class TestCrossVenueIntelligence(unittest.TestCase):
         self.assertEqual(sched.version, DEFAULT_FEE_VERSION)
 
         # Kalshi fee at P=0.40: min(0.07 * 0.40 * 0.60, 0.02) = min(0.0168, 0.02) = 0.0168
-        fee_k = calculate_venue_taker_fee("kalshi", 0.40, 100.0)
+        fee_k = calculate_venue_taker_fee("kalshi", 0.40, 100.0, version="v2026.1")
         self.assertEqual(fee_k["per_unit_fee"], 0.0168)
         self.assertEqual(fee_k["total_fee"], 1.68)
 
@@ -502,6 +502,7 @@ class TestCrossVenueIntelligence(unittest.TestCase):
             quantity=100.0,
             slippage_bps=10.0,
             poly_fees_enabled=False,
+            version="v2026.1",
         )
         # Gross = 0.42 - 0.38 = 0.04 -> $4.00
         self.assertEqual(cost_eval["gross_spread"], 0.04)
@@ -568,10 +569,11 @@ class TestCrossVenueIntelligence(unittest.TestCase):
         self.assertEqual(fee_from_api["fee_rate"], 0.04)
         self.assertEqual(fee_from_api["total_fee"], 0.96)
 
-        # 4. CLOB /fee-rate base_fee in bps normalization (e.g. base_fee=500 -> feeRate=0.05)
+        # 4. CLOB /fee-rate base_fee is basis points, but not a complete fee curve.
         norm_clob = normalize_polymarket_api_fee_config({"base_fee": 500})
-        self.assertEqual(norm_clob["fee_status"], "known")
-        self.assertEqual(norm_clob["fee_rate"], 0.05)
+        self.assertEqual(norm_clob["fee_status"], "unknown")
+        self.assertEqual(norm_clob["base_fee_bps"], 500)
+        self.assertEqual(norm_clob["base_fee_unit"], "basis_points")
 
         # 5. Explicit bps override: 400 bps -> feeRate=0.04 -> at P=0.50, C=100: 100 * 0.04 * 0.25 = 1.00
         fee_bps = calculate_venue_taker_fee("polymarket", 0.50, 100.0, poly_taker_bps=400.0)
@@ -617,7 +619,7 @@ class TestCrossVenueIntelligence(unittest.TestCase):
         self.assertEqual(crypto["fee_rate"], 0.07)
 
         sports = get_polymarket_market_fee_rate("sports")
-        self.assertEqual(sports["fee_rate"], 0.03)
+        self.assertEqual(sports["fee_rate"], 0.05)
 
         # Unrecognized or missing category -> unknown
         unknown_cat = get_polymarket_market_fee_rate("unrecognized_category")
@@ -895,7 +897,7 @@ class TestCrossVenueIntelligence(unittest.TestCase):
         r_fees = client.get("/api/v1/cross-venue/fees")
         self.assertEqual(r_fees.status_code, 200)
         f_data = r_fees.json()
-        self.assertEqual(f_data["default_version"], "v2026.1")
+        self.assertEqual(f_data["default_version"], "v2026.2")
         self.assertIn("v2026.1", f_data["schedules"])
 
         # 4. GET /api/v1/cross-venue/opportunities

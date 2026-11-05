@@ -1519,7 +1519,7 @@ class DurableJournal(Journal):
             float(opp.get("net_spread", 0.0)), float(opp.get("net_spread_bps", 0.0)),
             float(opp.get("available_qty", 0.0)),
             float(opp.get("vwap_entry", 0.0)), float(opp.get("vwap_exit", 0.0)),
-            opp.get("fee_version", "v2026.1"),
+            opp.get("fee_version", "v2026.2"),
             float(opp.get("poly_fee", 0.0)), float(opp.get("kalshi_fee", 0.0)),
             float(opp.get("slippage_bps", 10.0)),
             first_obs, last_obs,

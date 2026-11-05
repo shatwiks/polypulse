@@ -118,18 +118,18 @@ $$\text{Net Spread} = \text{Gross Spread} - \text{Fee}_{\text{buy\_venue}} - \te
   - Index series (`INDEX`, `SPX`, `NASDAQ`): multiplier **$0.035$ (3.5%)**, capped at $\$0.0175$ per contract.
   - Rounding rule: `ceil_whole_cents` at order level; minimum fee: $\$0.01$ per executed order.
 - **Polymarket Official Taker Fee Formula & API Normalization**:
-  Polymarket taker fees are non-linear in price variance $P(1 - P)$, rounded to 5 decimal places:
-  $$\text{fee} = \text{round}\left(C \times \text{feeRate} \times P \times (1 - P), 5\right)$$
+  Polymarket taker fees are rounded to 5 decimal places. The market's fee-curve exponent $e$ is applied to the price component:
+  $$\text{fee} = \text{round}\left(C \times r \times [P(1 - P)]^e, 5\right)$$
   where $\text{feeRate}$ is a **dimensionless formula coefficient** (NOT a simple flat percentage of contract notional).
   - **Resolution Precedence**:
-    1. **Token-Specific Official API Configuration**: Prefers the market/token fee configuration retrieved from Polymarket Gamma (`/markets?clob_token_ids=<id>`) or CLOB (`/fee-rate?token_id=<id>`). Unit normalization explicitly converts dimensionless `feeSchedule.rate` $\in [0, 1]$ directly and basis-point fields (`base_fee`, `taker_base_fee`, `fee_rate_bps`) via $\text{bps} / 10{,}000.0$.
+    1. **Token-Specific Official API Configuration**: Gamma (`/markets?clob_token_ids=<id>`) resolves the condition ID. CLOB `GET /clob-markets/{condition_id}` supplies `fd.r`, `fd.e`, and `fd.to`, preserved as coefficient, exponent, and taker-only flag. A complete Gamma `feeSchedule` can be used if CLOB market information is unavailable. `/fee-rate?token_id=<id>` returns `base_fee` in **basis points** only; this is metadata, not a complete fee curve, and cannot authorize an executable classification by itself.
     2. **Explicit Rate / Fee-Disabled Flag**: Honors explicit `poly_fee_rate`, `poly_taker_bps`, or `fees_enabled = False` ($\text{feeRate} = 0.0$).
     3. **Official Category Coefficients (`POLYMARKET_CATEGORY_FEES`)**:
        - **Finance** (`finance`, `finance_prices_fees`): $\text{feeRate} = 0.04$
        - **Politics** (`politics`, `politics_fees`): $\text{feeRate} = 0.04$
        - **Economics** (`economics`, `economics_fees`): $\text{feeRate} = 0.05$
        - **Geopolitics** (`geopolitics`, fee-free): $\text{feeRate} = 0.00$
-       - **Other Official Categories**: Crypto $0.07$, Sports $0.03$, Tech $0.04$, Culture $0.05$, Weather $0.05$, General/Other $0.05$.
+       - **Other Official Categories**: Crypto $0.07$, Sports $0.05$, Tech $0.04$, Culture $0.05$, Weather $0.05$, General/Other $0.05$.
     4. **Missing or Invalid Fee Configuration**: If the fee configuration is missing or invalid, the fee is classified as `fee_status = "unknown"`, `net_spread = None`, and the scanner **never** claims a positive executable net spread (`status = "candidate"`, `is_arbitrage = False`).
 - **Estimated Slippage Across Both Execution Legs**:
   Cross-venue execution requires entering two distinct market legs. The slippage buffer ($S_{\text{bps}} = 10\text{ bps}$) is applied per leg across each leg's notional value:
@@ -215,13 +215,15 @@ To ensure telemetry persistence and zero duplicate delivery inflation, all Phase
 
 ## 7. Performance Benchmarks
 
+These are prior Phase 6 measurements. The fee-engine and scanner throughput were not remeasured after the current runtime fee-curve fix; see [benchmarking.md](benchmarking.md) for provenance.
+
 Microbenchmark execution on local development hardware (AMD Ryzen / Windows 11 / NVMe SSD / ClickHouse 25.8 Docker) measured via `scripts/benchmark_cross_venue.py`:
 
 | Operation | Throughput | Latency | Execution Model |
 |---|---|---|---|
 | **Book Normalization** | 71,070.79 ops/sec | 14.070 us/op | Millionth-tick integer scaling & synthetic quote synthesis |
 | **Ladder VWAP (5 levels)** | 296,430.06 ops/sec | 3.373 us/op | Vectorized multi-tier orderbook depth traversal |
-| **Fee Schedule Engine (`v2026.2`)** | 45,206.64 ops/sec | 22.121 us/op | Polymarket `C*feeRate*P*(1-P)` + Kalshi CFTC multiplier + ceil-cent rounding |
+| **Fee Schedule Engine (prior run)** | 45,206.64 ops/sec | 22.121 us/op | Earlier Polymarket e=1 curve + Kalshi CFTC multiplier + ceil-cent rounding |
 | **Full Scanner Pair Evaluation** | 12,675.76 pairs/sec | 78.891 us/pair | Full 8-state gating, freshness, VWAP, and fee evaluation |
 
 ### ClickHouse Historical Analytics Latency (100 Measured Iterations After 5 Warm-up)
@@ -242,6 +244,8 @@ Measured against a populated dataset of **5,000 spread observations** and **2,50
 
 ## 8. Verification Results
 
+Current runtime fee fix: `POLYPULSE_FEE_VERSION` selects the active schedule (default `v2026.2`). `MarketState` passes it to every direct and inverse scanner evaluation, and persisted opportunities retain that version. Live mode refreshes token-specific CLOB fee curves every five minutes; until a usable configuration is available, the affected scanner result remains `fee_status=unknown`. The CLOB request and exponent behavior were verified with deterministic HTTP fixtures, not a live market request.
+
 | Component | Test Suite | Tests | Result |
 |---|---|---|---|
 | **Phase 6 Cross-Venue Intelligence** | `tests/test_cross_venue.py` | 27 | **27/27 PASSED** |
@@ -250,7 +254,8 @@ Measured against a populated dataset of **5,000 spread observations** and **2,50
 | **Phase 3 C++ Engine & Orderbook** | `tests/test_phase3.py` | 10 | **10/10 PASSED** |
 | **Phase 2 Ingestion & State** | `tests/test_phase2.py` | 19 | **19/19 PASSED** |
 | **End-to-End Pipeline** | `tests/test_pipeline.py` | 3 | **3/3 PASSED** |
-| **Total Test Suite** | `python -m pytest tests/` | 104 | **103 PASSED, 1 SKIPPED** (Live ClickHouse) |
+| **Runtime Fee Fix** | `tests/test_phase6_fee_runtime.py` | 16 | **16/16 PASSED** |
+| **Total Test Suite** | `.venv/Scripts/python -m pytest tests -q -p no:cacheprovider` | 120 | **119 PASSED, 1 SKIPPED** (Live ClickHouse) |
 | **C++20 Microstructure Engine** | `python scripts/build_engine.py --test` | Suite | **ALL PASSED** |
 | **React 19 Terminal Workspace** | `npm --prefix frontend run build` | 1,578 modules | **PASSED (0 errors, 85.65 kB gzip)** |
 

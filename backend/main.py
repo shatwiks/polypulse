@@ -27,7 +27,7 @@ from backend.wallet import normalize_address
 from backend.markout import CURRENT_CALC_VERSION
 from backend.logging_config import configure_logging
 from backend.scanner import validate_contract_compatibility
-from backend.fees import FEE_SCHEDULES, get_fee_schedule, DEFAULT_FEE_VERSION
+from backend.fees import FEE_SCHEDULES, get_fee_schedule, DEFAULT_FEE_VERSION, fetch_polymarket_token_fee_config
 from backend.notifications import NotificationEngine, NotificationConfig
 
 configure_logging()
@@ -39,11 +39,14 @@ def settings():
     mode = os.getenv("POLYPULSE_MODE", "demo")
     if mode not in ("demo", "live"):
         raise ValueError("POLYPULSE_MODE must be demo or live")
+    fee_version = os.getenv("POLYPULSE_FEE_VERSION", DEFAULT_FEE_VERSION)
+    if fee_version not in FEE_SCHEDULES:
+        raise ValueError(f"POLYPULSE_FEE_VERSION must be one of {', '.join(FEE_SCHEDULES)}")
     pairs = json.loads(os.getenv("MARKET_PAIRS_JSON", "[]"))
     clickhouse = os.getenv("CLICKHOUSE_URL", "")
     if mode == "live" and not clickhouse and os.getenv("CLICKHOUSE_PASSWORD"):
         clickhouse = f"http://polypulse:{quote(os.environ['CLICKHOUSE_PASSWORD'], safe='')}@localhost:8123"
-    return {"mode": mode, "pairs": pairs,
+    return {"mode": mode, "pairs": pairs, "fee_version": fee_version,
             "poly": [x for x in os.getenv("POLYMARKET_ASSET_IDS", "").split(",") if x],
             "kalshi": [x for x in os.getenv("KALSHI_MARKET_TICKERS", "").split(",") if x],
             "kalshi_key": os.getenv("KALSHI_API_KEY_ID", ""),
@@ -54,11 +57,20 @@ def settings():
             "polygon_start_block": int(os.environ["POLYGON_START_BLOCK"]) if os.getenv("POLYGON_START_BLOCK") else None}
 
 
+async def _refresh_polymarket_fees(state: MarketState, token_ids: list[str]) -> None:
+    """Refresh official market fee curves off the event loop; unknown stays fail-closed."""
+    while True:
+        for token_id in token_ids:
+            state.token_fee_configs[token_id] = await asyncio.to_thread(
+                fetch_polymarket_token_fee_config, token_id, use_cache=False)
+        await asyncio.sleep(300)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = settings()
     journal = DurableJournal(os.getenv("POLYPULSE_DB") or ("polypulse.db" if config["mode"] == "demo" else "polypulse-live.db"))
-    state = MarketState(journal, config["pairs"], mode=config["mode"])
+    state = MarketState(journal, config["pairs"], mode=config["mode"], fee_version=config["fee_version"])
     if config["mode"] == "live":
         state.replay_unprocessed()
     app.state.market = state
@@ -70,7 +82,11 @@ async def lifespan(app: FastAPI):
     if config["mode"] == "demo":
         tasks.append(asyncio.create_task(demo(state)))
     else:
+        state.token_fee_configs.update({token_id: {"fee_status": "unknown", "source": "awaiting_clob_market_fee_config"}
+                                        for token_id in config["poly"]})
         tasks.append(asyncio.create_task(polymarket(state, config["poly"])))
+        if config["poly"]:
+            tasks.append(asyncio.create_task(_refresh_polymarket_fees(state, config["poly"])))
         if config["kalshi"] and config["kalshi_key"] and config["kalshi_private_key"]:
             tasks.append(asyncio.create_task(kalshi(state, config["kalshi"], config["kalshi_key"], config["kalshi_private_key"])))
         else:
@@ -481,6 +497,7 @@ async def cross_venue_fees(version: Optional[str] = Query(None)):
         return asdict(FEE_SCHEDULES[version])
     return {
         "default_version": DEFAULT_FEE_VERSION,
+        "active_version": getattr(app.state, "config", {}).get("fee_version", DEFAULT_FEE_VERSION),
         "schedules": {k: asdict(v) for k, v in FEE_SCHEDULES.items()}
     }
 
