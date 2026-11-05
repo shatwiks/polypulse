@@ -426,15 +426,19 @@ polypulse/
 │   └── PULL_REQUEST_TEMPLATE.md   # PR validation & invariant checklist
 ├── backend/
 │   ├── analytics.py               # ClickHouse parameterized historical analytics client & telemetry
+│   ├── canonical.py               # Millionth-tick canonical price & quote normalization
 │   ├── connectors.py              # Polymarket CLOB & Kalshi v2 WebSocket feeds + Demo generator
 │   ├── durable.py                 # SQLite WAL durable journal & micro-batch ClickHouse exporter
 │   ├── engine.py                  # Python ctypes bridge to C++20 shared library
 │   ├── events.py                  # Canonical millionth-tick event models and venue parsers
+│   ├── fees.py                    # Versioned fee engine (Kalshi CFTC schedule, Poly fees, slippage buffer)
 │   ├── live.py                    # Production exchange connectors, watchdog, and REST reconciliation
 │   ├── logging_config.py          # Structured JSON logging and credential redaction
 │   ├── main.py                    # FastAPI application, REST endpoints, and WebSocket hubs
 │   ├── markout.py                 # Multi-horizon execution markout & adverse selection engine
+│   ├── notifications.py           # Cross-venue notification engine with per-pair cooldowns
 │   ├── polygon.py                 # Polygon V2 OrderFilled continuous poller and decoder
+│   ├── scanner.py                 # Cross-venue spread, ladder VWAP, and 8-state opportunity machine
 │   ├── state.py                   # MarketState manager, spread scanner, and listener queues
 │   ├── wallet.py                  # Wallet attribution models, address normalization & maker/taker extraction
 │   ├── Dockerfile                 # Backend container definition
@@ -454,6 +458,8 @@ polypulse/
 │   ├── phase3.md                  # Phase 3 C++20 orderbook engine audit & verification report
 │   ├── phase4.md                  # Phase 4 ClickHouse analytics architecture & verification report
 │   ├── phase5.md                  # Phase 5 Wallet intelligence & markout analytics architecture report
+│   ├── phase6.md                  # Phase 6 Cross-venue intelligence architecture & verification report
+│   ├── phase6_execution.md        # Phase 6 Execution log & stage progress tracker
 │   ├── system-design.md           # Deep-dive trade-off analysis and quantitative constraints
 │   ├── testing.md                 # Testing strategy, verification commands, and test suites
 │   └── assets/                    # Animated SVG diagrams and genuine application screenshots
@@ -480,9 +486,11 @@ polypulse/
 ├── scripts/
 │   ├── benchmark.py               # Reproducible C++ benchmark build and execution script
 │   ├── benchmark_clickhouse.py    # Automated ClickHouse analytics query benchmark suite
+│   ├── benchmark_cross_venue.py   # Reproducible Phase 6 cross-venue benchmark suite
 │   └── build_engine.py            # C++ compiler build script for shared library and tests
 ├── tests/
 │   ├── test_clickhouse_analytics.py # ClickHouse schema, deduplication, and MV integration tests
+│   ├── test_cross_venue.py        # Cross-venue equivalence, ladder VWAP, fee engine & state machine tests
 │   ├── test_phase2.py             # Live feeds, sequence gaps, and reconciliation tests
 │   ├── test_phase3.py             # C++20 orderbook FFI, AVX2 SIMD, and OFI tests
 │   ├── test_pipeline.py           # Python unittest suite for normalization and durability
@@ -571,6 +579,15 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 | `GET` | `/api/v1/contracts` | List operator-reviewed contract pairs | — |
 | `PUT` | `/api/v1/contracts` | Save contract review *(Operator authenticated)* | `X-Operator-Key` header, JSON pair review |
 | `DELETE` | `/api/v1/contracts/{poly_id}/{ticker}` | Remove contract review *(Operator authenticated)* | `X-Operator-Key` header |
+| `GET` | `/api/v1/cross-venue/pairs` | List cross-venue contract pairs with verification filter | `status=verified\|unverified\|all` |
+| `GET` | `/api/v1/cross-venue/pairs/{pair_id}` | Retrieve individual cross-venue pair specifications | — |
+| `PUT` | `/api/v1/cross-venue/pairs/{pair_id}/review` | Submit/update operator contract review *(Authenticated)* | `X-Operator-Key` header |
+| `GET` | `/api/v1/cross-venue/spreads` | Live scanned spreads across all verified pairs | — |
+| `GET` | `/api/v1/cross-venue/opportunities` | Filtered active arbitrage opportunities (gross/net spread) | `min_net_spread`, `state` |
+| `GET` | `/api/v1/cross-venue/opportunities/{opp_id}` | Retrieve single opportunity detail and fill capacity | — |
+| `GET` | `/api/v1/cross-venue/fees` | Active fee schedule versions and fee calculation breakdown | — |
+| `GET` | `/api/v1/cross-venue/analytics` | Historical cross-venue analytics & duration stats | `horizon_hours` |
+| `GET` | `/api/v1/cross-venue/notifications` | Audit log of recent cross-venue notification events | `limit` |
 | `GET` | `/api/v1/health` | Feed status, journal stats, sequence counters | — |
 | `GET` | `/api/v1/metrics` | System diagnostic metrics (aliased to health) | — |
 | `POST` | `/api/v1/trades` | Ingest trade execution *(Demo mode only)* | JSON: `trade_id`, `wallet`, `venue`, `price`, etc. |
@@ -588,6 +605,7 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 | WebSocket URL | Protocol Description |
 | :--- | :--- |
 | `ws://localhost:8000/ws/markets` | Emits initial market snapshot upon handshake, followed by real-time `book` deltas and 5s `health` frames. |
+| `ws://localhost:8000/ws/cross-venue` | Emits real-time cross-venue arbitrage frames, verified pair statuses, and executable depth updates. |
 | `ws://localhost:8000/ws/wallets` | Streams periodic aggregated trade counts per wallet every 5 seconds. |
 
 *Full request/response schemas: [docs/api-reference.md](docs/api-reference.md).*
@@ -596,31 +614,34 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 
 ## 11. Testing & Verification
 
-PolyPulse includes automated test suites across all layers (88 tests passing):
+PolyPulse includes automated test suites across all layers (100 test items, 99 passing, 1 skipped):
 
 ```powershell
 # 1. C++ Engine Unit Tests
 python scripts/build_engine.py --test
 
-# 2. Python Test Suite (All 88 tests across live feeds, C++ FFI, ClickHouse, Markouts & Cross-Venue)
-python -m unittest discover -s tests -v
+# 2. Python Test Suite (All 100 tests across live feeds, C++ FFI, ClickHouse, Markouts & Cross-Venue)
+python -m pytest tests/
 
-# 3. Cross-Venue Intelligence & Arbitrage Scanner Tests (11 tests)
-python -m unittest tests/test_cross_venue.py -v
+# 3. Cross-Venue Intelligence & Arbitrage Scanner Tests (23 tests)
+python -m pytest tests/test_cross_venue.py -v
 
 # 4. Wallet Intelligence & Markout Analytics Tests (28 tests)
-python -m unittest tests/test_wallet_markout.py -v
+python -m pytest tests/test_wallet_markout.py -v
 
 # 5. ClickHouse Analytics Integration Tests (16 tests)
-python -m unittest tests/test_clickhouse_analytics.py -v
+python -m pytest tests/test_clickhouse_analytics.py -v
 
 # 6. Frontend TypeScript Typecheck & Production Build
-npm --prefix frontend run build
+cd frontend; npm run build; cd ..
 
-# 6. C++20 Orderbook Microbenchmark Suite
+# 7. Cross-Venue Performance & Microbenchmark Suite
+python scripts/benchmark_cross_venue.py
+
+# 8. C++20 Orderbook Microbenchmark Suite
 python scripts/benchmark.py
 
-# 7. ClickHouse Analytics Query Benchmark
+# 9. ClickHouse Analytics Query Benchmark
 python scripts/benchmark_clickhouse.py
 ```
 
@@ -639,7 +660,7 @@ python scripts/benchmark_clickhouse.py
 - [x] **Phase 3: C++20 Performance Engine & Microstructure** — Contiguous preallocated vector orderbook (56.39M level updates/sec, 42.48M insert/delete ops/sec, 3.66x faster than `std::map`), 128-bit integer VWAP (79.97M ops/sec), Cont-Kukanov-Stoikov (2014) OFI tracking (934.93M ops/sec), spread analytics (169.55M ops/sec), AVX2 SIMD vectorized batch VWAP kernel (13.53M ops/sec, 1.48x speedup), and C ctypes bridge. See [Phase 3 Report](docs/phase3.md).
 - [x] **Phase 4: ClickHouse Analytics Infrastructure** — ReplacingMergeTree operational tables with DoubleDelta, T64, and ZSTD codecs; AggregatingMergeTree Materialized Views (`trade_candles_1m`, `book_summary_1m`, `venue_event_stats_10s`); dual-defense deduplication (deterministic SHA-256 batch tokens + `trades FINAL` query layer) verified via 14-step audit; 4.9x row scan reduction with 2.3x server execution speedup at scale; parameterized FastAPI analytics API; React terminal historical analytics dashboard with storage telemetry. See [Phase 4 Report](docs/phase4.md).
 - [x] **Phase 5: Wallet Intelligence & Markout Analytics Engine** — Verified wallet attribution for Polygon CTF V2 maker/taker fills and synthetic demo execution (zero-fabrication guarantee for public CLOB feeds); 5s, 30s, and 60s post-trade adverse selection markout math in $ and basis points; microstructure rejection of crossed/locked books; calculation versioning (`v1.0`); ClickHouse `wallet_trades` and `trade_markouts` ReplacingMergeTree tables; minimum sample size ($N \ge 5$) ranking guardrail; interactive React terminal workspace with wallet leaderboard, drift breakdown, and adverse selection quantiles. See [Phase 5 Report](docs/phase5.md).
-- [x] **Phase 6: Cross-Venue Intelligence** — Operator-reviewed 7-dimension contract registry, direct and inverse outcome mapping, negative-risk mint and merge arbitrage mathematics, executable depth and fee haircut modeling, and strict scanner gating. See [Phase 6 Report](docs/phase6.md).
+- [x] **Phase 6: Cross-Venue Intelligence & Arbitrage Scanner** — Operator-reviewed 7-dimension contract registry (zero title-only matching invariant); canonical price normalization; multi-size depth-aware VWAP (10, 50, 100, 500 contracts); versioned fee schedule engine (`backend/fees.py`) with non-linear Kalshi CFTC taker fees and slippage modeling; 8-state Opportunity State Machine (`candidate`, `executable`, `insufficient_liquidity`, `stale`, etc.); quote freshness ($T_{\text{age}} \le 10\text{s}$) and venue delta synchronization ($\Delta_{\text{venues}} \le 5\text{s}$); ClickHouse operational tables & SQLite WAL immutable outbox batches; dedicated FastAPI `/api/v1/cross-venue/...` REST endpoints; real-time WebSocket stream (`/ws/cross-venue`); notification engine with per-pair cooldowns; dedicated React 19 Cross-Venue terminal workspace; microbenchmarks (20,255 pairs/sec); and 23 deterministic unit tests (99/99 full suite pass). See [Phase 6 Report](docs/phase6.md) and [Phase 6 Execution Log](docs/phase6_execution.md).
 - [x] **Phase 7: React 19 Terminal** — Real-time orderbook ladder, Web Worker stream parsing, dark technical UI, and ClickHouse analytics view.
 - [ ] **Phase 8: Distributed Systems Reliability** *(In Progress)* — Multi-region silence watchdog, automated reconnect jitter, recovery stress testing.
 - [ ] **Phase 9: Production Hardening** *(In Progress)* — Authenticated contract review landed; continuous Polygon poller verified; awaiting Kalshi live credentials.

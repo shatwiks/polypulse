@@ -753,3 +753,261 @@ class ClickHouseAnalytics:
             "avg_bps": round(float(r["avg_bps"]), 2) if r.get("avg_bps") is not None else None,
             "win_rate": round(float(r["win_rate"]), 1) if r.get("win_rate") is not None else None
         }
+
+    async def get_top_spread_pairs(
+        self,
+        limit: int = 10,
+        min_observations: int = 5,
+        window: str = "24h"
+    ) -> List[Dict[str, Any]]:
+        """
+        Answers: Which verified pairs have the largest average spread?
+        Enforces min_observations guardrail to avoid ranking spurious pairs.
+        """
+        delta = parse_window(window)
+        since = (datetime.now(timezone.utc) - delta).strftime("%Y-%m-%d %H:%M:%S")
+
+        query = """
+        SELECT
+            pair_id,
+            canonical_event,
+            canonical_outcome,
+            equivalence_mapping,
+            count() AS total_observations,
+            avg(gross_spread) AS avg_gross_spread,
+            avg(gross_spread_bps) AS avg_gross_spread_bps,
+            avg(net_spread) AS avg_net_spread,
+            avg(net_spread_bps) AS avg_net_spread_bps,
+            max(gross_spread) AS max_gross_spread,
+            max(net_spread) AS max_net_spread,
+            avg(executable_qty) AS avg_executable_qty,
+            sum(if(status = 'executable', 1, 0)) AS executable_observations,
+            round(100.0 * sum(if(status = 'executable', 1, 0)) / nullIf(count(), 0), 1) AS executable_rate_pct
+        FROM polypulse.spread_observations FINAL
+        WHERE observed_at >= {since:DateTime64(3, 'UTC')}
+        GROUP BY pair_id, canonical_event, canonical_outcome, equivalence_mapping
+        HAVING total_observations >= {min_obs:UInt32}
+        ORDER BY avg_net_spread DESC, total_observations DESC
+        LIMIT {limit:UInt32}
+        """
+        params = {"since": since, "min_obs": min_observations, "limit": limit}
+        rows = await self.execute_query(query, params)
+        results = []
+        for r in rows:
+            results.append({
+                "pair_id": r["pair_id"],
+                "canonical_event": r.get("canonical_event", ""),
+                "canonical_outcome": r.get("canonical_outcome", ""),
+                "equivalence_mapping": r.get("equivalence_mapping", "direct"),
+                "total_observations": int(r.get("total_observations", 0)),
+                "avg_gross_spread": round(float(r.get("avg_gross_spread", 0.0)), 6),
+                "avg_gross_spread_bps": round(float(r.get("avg_gross_spread_bps", 0.0)), 2),
+                "avg_net_spread": round(float(r.get("avg_net_spread", 0.0)), 6),
+                "avg_net_spread_bps": round(float(r.get("avg_net_spread_bps", 0.0)), 2),
+                "max_gross_spread": round(float(r.get("max_gross_spread", 0.0)), 6),
+                "max_net_spread": round(float(r.get("max_net_spread", 0.0)), 6),
+                "avg_executable_qty": round(float(r.get("avg_executable_qty", 0.0)), 2),
+                "executable_observations": int(r.get("executable_observations", 0)),
+                "executable_rate_pct": float(r.get("executable_rate_pct", 0.0))
+            })
+        return results
+
+    async def get_opportunity_frequency(
+        self,
+        window: str = "24h",
+        min_observations: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Answers:
+        - Which pairs have the most frequent executable opportunities?
+        - How often do gross opportunities disappear after fees?
+        - How often are apparent opportunities rejected because of stale quotes?
+        """
+        delta = parse_window(window)
+        since = (datetime.now(timezone.utc) - delta).strftime("%Y-%m-%d %H:%M:%S")
+
+        query = """
+        SELECT
+            pair_id,
+            canonical_event,
+            count() AS total_observations,
+            sum(if(gross_spread > 0, 1, 0)) AS gross_positive_count,
+            sum(if(status = 'executable', 1, 0)) AS executable_count,
+            sum(if(gross_spread > 0 AND (net_spread <= 0 OR status = 'candidate'), 1, 0)) AS fee_eroded_count,
+            sum(if(status = 'stale', 1, 0)) AS stale_rejected_count,
+            sum(if(status = 'insufficient_liquidity', 1, 0)) AS liquidity_rejected_count,
+            round(100.0 * sum(if(gross_spread > 0 AND (net_spread <= 0 OR status = 'candidate'), 1, 0)) / nullIf(sum(if(gross_spread > 0, 1, 0)), 0), 2) AS fee_erosion_pct,
+            round(100.0 * sum(if(status = 'stale', 1, 0)) / nullIf(count(), 0), 2) AS stale_rejection_pct
+        FROM polypulse.spread_observations FINAL
+        WHERE observed_at >= {since:DateTime64(3, 'UTC')}
+        GROUP BY pair_id, canonical_event
+        HAVING total_observations >= {min_obs:UInt32}
+        ORDER BY executable_count DESC, total_observations DESC
+        """
+        params = {"since": since, "min_obs": min_observations}
+        rows = await self.execute_query(query, params)
+        results = []
+        for r in rows:
+            results.append({
+                "pair_id": r["pair_id"],
+                "canonical_event": r.get("canonical_event", ""),
+                "total_observations": int(r.get("total_observations", 0)),
+                "gross_positive_count": int(r.get("gross_positive_count", 0)),
+                "executable_count": int(r.get("executable_count", 0)),
+                "fee_eroded_count": int(r.get("fee_eroded_count", 0)),
+                "stale_rejected_count": int(r.get("stale_rejected_count", 0)),
+                "liquidity_rejected_count": int(r.get("liquidity_rejected_count", 0)),
+                "fee_erosion_pct": float(r.get("fee_erosion_pct", 0.0) or 0.0),
+                "stale_rejection_pct": float(r.get("stale_rejection_pct", 0.0) or 0.0)
+            })
+        return results
+
+    async def get_opportunity_duration_stats(
+        self,
+        pair_id: Optional[str] = None,
+        window: str = "7d"
+    ) -> Dict[str, Any]:
+        """
+        Answers: How long do opportunities remain available?
+        """
+        delta = parse_window(window)
+        since = (datetime.now(timezone.utc) - delta).strftime("%Y-%m-%d %H:%M:%S")
+        p_filter = "AND pair_id = {pair:String}" if pair_id else ""
+
+        query = f"""
+        SELECT
+            count() AS total_opportunities,
+            avg(duration_seconds) AS avg_duration_seconds,
+            quantile(0.50)(duration_seconds) AS median_duration_seconds,
+            quantile(0.90)(duration_seconds) AS p90_duration_seconds,
+            max(duration_seconds) AS max_duration_seconds,
+            avg(net_spread) AS avg_net_spread,
+            avg(available_qty) AS avg_available_qty
+        FROM polypulse.arbitrage_opportunities FINAL
+        WHERE first_observed_at >= {{since:DateTime64(3, 'UTC')}}
+          {p_filter}
+        """
+        params = {"since": since}
+        if pair_id:
+            params["pair"] = pair_id
+
+        rows = await self.execute_query(query, params)
+        if not rows:
+            return {
+                "pair_id": pair_id,
+                "window": window,
+                "total_opportunities": 0,
+                "avg_duration_seconds": None,
+                "median_duration_seconds": None,
+                "p90_duration_seconds": None,
+                "max_duration_seconds": None,
+                "avg_net_spread": None,
+                "avg_available_qty": None
+            }
+        r = rows[0]
+        return {
+            "pair_id": pair_id,
+            "window": window,
+            "total_opportunities": int(r.get("total_opportunities", 0)),
+            "avg_duration_seconds": round(float(r["avg_duration_seconds"]), 2) if r.get("avg_duration_seconds") is not None else None,
+            "median_duration_seconds": round(float(r["median_duration_seconds"]), 2) if r.get("median_duration_seconds") is not None else None,
+            "p90_duration_seconds": round(float(r["p90_duration_seconds"]), 2) if r.get("p90_duration_seconds") is not None else None,
+            "max_duration_seconds": round(float(r["max_duration_seconds"]), 2) if r.get("max_duration_seconds") is not None else None,
+            "avg_net_spread": round(float(r["avg_net_spread"]), 6) if r.get("avg_net_spread") is not None else None,
+            "avg_available_qty": round(float(r["avg_available_qty"]), 2) if r.get("avg_available_qty") is not None else None
+        }
+
+    async def get_venue_comparison_analytics(
+        self,
+        window: str = "24h"
+    ) -> List[Dict[str, Any]]:
+        """
+        Answers:
+        - Which venue usually has better prices?
+        - How does available depth affect spread quality?
+        """
+        delta = parse_window(window)
+        since = (datetime.now(timezone.utc) - delta).strftime("%Y-%m-%d %H:%M:%S")
+
+        query = """
+        SELECT
+            buy_venue,
+            sell_venue,
+            count() AS opportunity_count,
+            avg(gross_spread) AS avg_gross_spread,
+            avg(net_spread) AS avg_net_spread,
+            avg(available_qty) AS avg_available_qty,
+            sum(if(status = 'executable', 1, 0)) AS executable_count
+        FROM polypulse.arbitrage_opportunities FINAL
+        WHERE first_observed_at >= {since:DateTime64(3, 'UTC')}
+        GROUP BY buy_venue, sell_venue
+        ORDER BY opportunity_count DESC
+        """
+        params = {"since": since}
+        rows = await self.execute_query(query, params)
+        results = []
+        for r in rows:
+            results.append({
+                "buy_venue": r["buy_venue"],
+                "sell_venue": r["sell_venue"],
+                "opportunity_count": int(r.get("opportunity_count", 0)),
+                "avg_gross_spread": round(float(r.get("avg_gross_spread", 0.0)), 6),
+                "avg_net_spread": round(float(r.get("avg_net_spread", 0.0)), 6),
+                "avg_available_qty": round(float(r.get("avg_available_qty", 0.0)), 2),
+                "executable_count": int(r.get("executable_count", 0))
+            })
+        return results
+
+    async def get_quote_freshness_stats(
+        self,
+        pair_id: Optional[str] = None,
+        window: str = "24h"
+    ) -> Dict[str, Any]:
+        """
+        Answers: Quote freshness statistics and clock synchronization timing.
+        """
+        delta = parse_window(window)
+        since = (datetime.now(timezone.utc) - delta).strftime("%Y-%m-%d %H:%M:%S")
+        p_filter = "AND pair_id = {pair:String}" if pair_id else ""
+
+        query = f"""
+        SELECT
+            count() AS sample_count,
+            avg(quote_age_poly) AS avg_quote_age_poly,
+            quantile(0.95)(quote_age_poly) AS p95_quote_age_poly,
+            avg(quote_age_kalshi) AS avg_quote_age_kalshi,
+            quantile(0.95)(quote_age_kalshi) AS p95_quote_age_kalshi,
+            avg(venue_delta_seconds) AS avg_venue_delta_seconds,
+            max(venue_delta_seconds) AS max_venue_delta_seconds,
+            sum(if(venue_delta_seconds > 5.0, 1, 0)) AS desync_count
+        FROM polypulse.spread_observations FINAL
+        WHERE observed_at >= {{since:DateTime64(3, 'UTC')}}
+          {p_filter}
+        """
+        params = {"since": since}
+        if pair_id:
+            params["pair"] = pair_id
+
+        rows = await self.execute_query(query, params)
+        if not rows:
+            return {
+                "sample_count": 0,
+                "avg_quote_age_poly": None,
+                "p95_quote_age_poly": None,
+                "avg_quote_age_kalshi": None,
+                "p95_quote_age_kalshi": None,
+                "avg_venue_delta_seconds": None,
+                "max_venue_delta_seconds": None,
+                "desync_count": 0
+            }
+        r = rows[0]
+        return {
+            "sample_count": int(r.get("sample_count", 0)),
+            "avg_quote_age_poly": round(float(r["avg_quote_age_poly"]), 2) if r.get("avg_quote_age_poly") is not None else None,
+            "p95_quote_age_poly": round(float(r["p95_quote_age_poly"]), 2) if r.get("p95_quote_age_poly") is not None else None,
+            "avg_quote_age_kalshi": round(float(r["avg_quote_age_kalshi"]), 2) if r.get("avg_quote_age_kalshi") is not None else None,
+            "p95_quote_age_kalshi": round(float(r["p95_quote_age_kalshi"]), 2) if r.get("p95_quote_age_kalshi") is not None else None,
+            "avg_venue_delta_seconds": round(float(r["avg_venue_delta_seconds"]), 2) if r.get("avg_venue_delta_seconds") is not None else None,
+            "max_venue_delta_seconds": round(float(r["max_venue_delta_seconds"]), 2) if r.get("max_venue_delta_seconds") is not None else None,
+            "desync_count": int(r.get("desync_count", 0))
+        }

@@ -292,3 +292,175 @@ ORDER BY (wallet_address, horizon_seconds, calc_version, trade_id)
 TTL trade_timestamp + INTERVAL 180 DAY
 SETTINGS non_replicated_deduplication_window = 1000;
 
+-- ------------------------------------------------------------------------------
+-- 11. Cross-Venue Contract Pair Reviews
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS polypulse.contract_pair_reviews (
+  pair_id String,
+  polymarket_asset_id String,
+  kalshi_ticker String,
+  canonical_event String,
+  canonical_outcome String,
+  equivalence_mapping LowCardinality(String),
+  resolution_source String,
+  resolution_criteria String,
+  polymarket_expiration Nullable(DateTime64(3, 'UTC')),
+  kalshi_expiration Nullable(DateTime64(3, 'UTC')),
+  settlement_details String,
+  verification_status LowCardinality(String),
+  reviewer String,
+  reviewed_at DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1))
+) ENGINE = ReplacingMergeTree(reviewed_at)
+PARTITION BY toYYYYMM(reviewed_at)
+ORDER BY (pair_id, reviewer, reviewed_at)
+TTL reviewed_at + INTERVAL 365 DAY
+SETTINGS non_replicated_deduplication_window = 1000;
+
+-- ------------------------------------------------------------------------------
+-- 12. Cross-Venue Normalized Quotes
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS polypulse.cross_venue_quotes (
+  quote_id UUID,
+  pair_id String,
+  venue LowCardinality(String),
+  market_id String,
+  outcome_id String,
+  best_bid Decimal64(6) CODEC(T64, ZSTD(1)),
+  best_ask Decimal64(6) CODEC(T64, ZSTD(1)),
+  bid_depth Decimal64(6) CODEC(T64, ZSTD(1)),
+  ask_depth Decimal64(6) CODEC(T64, ZSTD(1)),
+  exchange_timestamp Nullable(DateTime64(3, 'UTC')) CODEC(DoubleDelta, ZSTD(1)),
+  received_timestamp DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+  quote_age_seconds Float32,
+  valid UInt8
+) ENGINE = ReplacingMergeTree(received_timestamp)
+PARTITION BY toYYYYMM(received_timestamp)
+ORDER BY (pair_id, venue, received_timestamp, quote_id)
+TTL received_timestamp + INTERVAL 30 DAY
+SETTINGS non_replicated_deduplication_window = 1000;
+
+-- ------------------------------------------------------------------------------
+-- 13. Cross-Venue Spread Observations
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS polypulse.spread_observations (
+  observation_id UUID,
+  pair_id String,
+  canonical_event String,
+  canonical_outcome String,
+  equivalence_mapping LowCardinality(String),
+  observed_at DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+  poly_best_bid Decimal64(6) CODEC(T64, ZSTD(1)),
+  poly_best_ask Decimal64(6) CODEC(T64, ZSTD(1)),
+  kalshi_best_bid Decimal64(6) CODEC(T64, ZSTD(1)),
+  kalshi_best_ask Decimal64(6) CODEC(T64, ZSTD(1)),
+  poly_ask_depth Decimal64(6) CODEC(T64, ZSTD(1)),
+  kalshi_bid_depth Decimal64(6) CODEC(T64, ZSTD(1)),
+  gross_spread Decimal64(6) CODEC(T64, ZSTD(1)),
+  gross_spread_bps Decimal64(2) CODEC(T64, ZSTD(1)),
+  net_spread Decimal64(6) CODEC(T64, ZSTD(1)),
+  net_spread_bps Decimal64(2) CODEC(T64, ZSTD(1)),
+  poly_fee Decimal64(6) CODEC(T64, ZSTD(1)),
+  kalshi_fee Decimal64(6) CODEC(T64, ZSTD(1)),
+  slippage_cost Decimal64(6) CODEC(T64, ZSTD(1)),
+  executable_qty Decimal64(6) CODEC(T64, ZSTD(1)),
+  opportunity_type LowCardinality(String),
+  status LowCardinality(String),
+  quote_age_poly Float32,
+  quote_age_kalshi Float32,
+  venue_delta_seconds Float32
+) ENGINE = ReplacingMergeTree(observed_at)
+PARTITION BY toYYYYMM(observed_at)
+ORDER BY (pair_id, observed_at, observation_id)
+TTL observed_at + INTERVAL 60 DAY
+SETTINGS non_replicated_deduplication_window = 1000;
+
+-- ------------------------------------------------------------------------------
+-- 14. Arbitrage Opportunities Ledger
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS polypulse.arbitrage_opportunities (
+  opportunity_id String,
+  pair_id String,
+  opportunity_type LowCardinality(String),
+  buy_venue LowCardinality(String),
+  sell_venue LowCardinality(String),
+  canonical_event String,
+  canonical_outcome String,
+  status LowCardinality(String),
+  gross_spread Decimal64(6) CODEC(T64, ZSTD(1)),
+  gross_spread_bps Decimal64(2) CODEC(T64, ZSTD(1)),
+  net_spread Decimal64(6) CODEC(T64, ZSTD(1)),
+  net_spread_bps Decimal64(2) CODEC(T64, ZSTD(1)),
+  available_qty Decimal64(6) CODEC(T64, ZSTD(1)),
+  vwap_entry Decimal64(6) CODEC(T64, ZSTD(1)),
+  vwap_exit Decimal64(6) CODEC(T64, ZSTD(1)),
+  fee_version LowCardinality(String),
+  poly_fee Decimal64(6) CODEC(T64, ZSTD(1)),
+  kalshi_fee Decimal64(6) CODEC(T64, ZSTD(1)),
+  slippage_bps Decimal64(2) CODEC(T64, ZSTD(1)),
+  first_observed_at DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+  last_observed_at DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+  duration_seconds Float32,
+  observation_count UInt32
+) ENGINE = ReplacingMergeTree(last_observed_at)
+PARTITION BY toYYYYMM(first_observed_at)
+ORDER BY (pair_id, opportunity_type, opportunity_id)
+TTL first_observed_at + INTERVAL 90 DAY
+SETTINGS non_replicated_deduplication_window = 1000;
+
+-- ------------------------------------------------------------------------------
+-- 15. Fee Schedule Versions
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS polypulse.fee_schedule_versions (
+  version LowCardinality(String),
+  effective_date DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+  source String,
+  polymarket_maker_bps Decimal64(4) CODEC(T64, ZSTD(1)),
+  polymarket_taker_bps Decimal64(4) CODEC(T64, ZSTD(1)),
+  polymarket_settlement_fee_pct Decimal64(4) CODEC(T64, ZSTD(1)),
+  kalshi_maker_bps Decimal64(4) CODEC(T64, ZSTD(1)),
+  kalshi_taker_formula String,
+  kalshi_max_taker_fee Decimal64(4) CODEC(T64, ZSTD(1)),
+  kalshi_min_fee Decimal64(6) CODEC(T64, ZSTD(1)),
+  default_slippage_bps Decimal64(4) CODEC(T64, ZSTD(1)),
+  notes String,
+  created_at DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1))
+) ENGINE = ReplacingMergeTree(created_at)
+PARTITION BY toYYYYMM(created_at)
+ORDER BY (version)
+SETTINGS non_replicated_deduplication_window = 1000;
+
+-- ------------------------------------------------------------------------------
+-- 16. Materialized View Target: 1-Minute Cross-Venue Spread Summary
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS polypulse.spread_summary_1m (
+  pair_id String,
+  window_start DateTime64(3, 'UTC'),
+  observation_count AggregateFunction(count),
+  avg_gross_spread AggregateFunction(avg, Decimal(18, 6)),
+  max_gross_spread AggregateFunction(max, Decimal(18, 6)),
+  avg_net_spread AggregateFunction(avg, Decimal(18, 6)),
+  max_net_spread AggregateFunction(max, Decimal(18, 6)),
+  avg_executable_qty AggregateFunction(avg, Decimal(18, 6)),
+  executable_seconds AggregateFunction(sum, UInt32)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMM(window_start)
+ORDER BY (pair_id, window_start)
+TTL window_start + INTERVAL 180 DAY
+SETTINGS non_replicated_deduplication_window = 1000;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS polypulse.mv_spread_summary_1m
+TO polypulse.spread_summary_1m AS
+SELECT
+  pair_id,
+  toStartOfMinute(observed_at) AS window_start,
+  countState() AS observation_count,
+  avgState(gross_spread) AS avg_gross_spread,
+  maxState(gross_spread) AS max_gross_spread,
+  avgState(net_spread) AS avg_net_spread,
+  maxState(net_spread) AS max_net_spread,
+  avgState(executable_qty) AS avg_executable_qty,
+  sumState(if(status = 'executable', toUInt32(1), toUInt32(0))) AS executable_seconds
+FROM polypulse.spread_observations
+GROUP BY pair_id, window_start;
+
+

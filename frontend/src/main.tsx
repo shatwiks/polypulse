@@ -5,7 +5,48 @@ import './style.css'
 
 type Book = {venue:string;market_id:string;bids:number[][];asks:number[][];best_bid:number|null;best_ask:number|null;buy_vwap_10:number|null;imbalance:number;sequence:number;valid?:boolean;stale?:boolean;recovery_status?:string;last_received_timestamp?:string|null}
 type Health = {mode:string;feeds:Record<string,string>;feed_details?:Record<string,{status:string;detail?:string|null;last_received_timestamp?:string|null}>;storage:{clickhouse:string;insert_latency_ms?:number};uptime_seconds:number;ingestion_lag_seconds?:number|null;rates?:{events_received_per_second:number;events_processed_per_second:number;orderbook_processing_latency_ms_p95?:number|null};journal:{events:number;pending_export:number;snapshots:number};counters:{events:number;gaps:number;recoveries:number;duplicates:number;reconnects?:number}}
-type Spread = {name:string;polymarket:Book;kalshi:Book;buy_polymarket_sell_kalshi:number|null;buy_kalshi_sell_polymarket:number|null;best_spread?:number|null;best_spread_bps?:number|null;net_spread?:number|null;executable_qty?:number;executable_notional?:number;opportunity_type?:string;is_arbitrage?:boolean;equivalence_mapping?:'direct'|'inverse';canonical_event?:string;canonical_outcome?:string;resolution_source?:string;reviewer?:string;verified_at?:string|null;note:string}
+type Spread = {
+  pair_id?:string;
+  name:string;
+  canonical_event?:string;
+  canonical_outcome?:string;
+  polymarket_asset_id?:string;
+  kalshi_ticker?:string;
+  polymarket:Book;
+  kalshi:Book;
+  buy_polymarket_sell_kalshi:number|null;
+  buy_kalshi_sell_polymarket:number|null;
+  best_spread?:number|null;
+  best_spread_bps?:number|null;
+  net_spread?:number|null;
+  poly_fee?:number;
+  kalshi_fee?:number;
+  executable_qty?:number;
+  executable_notional?:number;
+  opportunity_type?:string;
+  status?:string;
+  is_arbitrage?:boolean;
+  equivalence_mapping?:'direct'|'inverse';
+  resolution_source?:string;
+  resolution_criteria?:string;
+  settlement_details?:string;
+  expiration?:string;
+  reviewer?:string;
+  verified_at?:string|null;
+  quote_age_seconds?:{polymarket:number;kalshi:number;venue_delta:number};
+  vwap_by_size?:Record<string,{fillable:boolean;buy_vwap?:number;sell_vwap?:number;vwap_spread?:number;max_available?:number;poly_ask_vwap?:number;kalshi_ask_vwap?:number;poly_bid_vwap?:number;kalshi_bid_vwap?:number}>;
+  note:string
+}
+type CrossVenueAnalyticsData = {
+  source:string;
+  window:string;
+  min_observations:number;
+  top_spread_pairs:{pair_id:string;canonical_event:string;canonical_outcome:string;equivalence_mapping:string;total_observations:number;avg_gross_spread:number;avg_gross_spread_bps:number;avg_net_spread:number;avg_net_spread_bps:number;max_gross_spread:number;max_net_spread:number;avg_executable_qty:number;executable_observations:number;executable_rate_pct:number}[];
+  opportunity_frequency:{pair_id:string;canonical_event:string;total_observations:number;gross_positive_count:number;executable_count:number;fee_eroded_count:number;stale_rejected_count:number;fee_erosion_pct:number;stale_rejection_pct:number}[];
+  duration_stats:{total_opportunities:number;avg_duration_seconds:number|null;median_duration_seconds:number|null;p90_duration_seconds:number|null;max_duration_seconds:number|null;avg_net_spread:number|null;avg_available_qty:number|null};
+  venue_comparison:{buy_venue:string;sell_venue:string;opportunity_count:number;avg_gross_spread:number;avg_net_spread:number;avg_available_qty:number;executable_count:number}[];
+  quote_freshness:{sample_count:number;avg_quote_age_poly:number|null;p95_quote_age_poly:number|null;avg_quote_age_kalshi:number|null;p95_quote_age_kalshi:number|null;avg_venue_delta_seconds:number|null;max_venue_delta_seconds:number|null;desync_count:number}
+}
 type ContractPair = {polymarket_asset_id:string;kalshi_ticker:string;canonical_event?:string;canonical_outcome?:string;event_description:string;outcome_equivalence:string;equivalence_mapping?:'direct'|'inverse';resolution_source:string;resolution_criteria?:string;expiration:string;polymarket_expiration?:string;kalshi_expiration?:string;settlement_details?:string;verification_status:'unverified'|'verified'|'rejected'|'incompatible'|'expired';reviewer?:string;verified_at?:string|null}
 const emptyContract:ContractPair={polymarket_asset_id:'',kalshi_ticker:'',canonical_event:'',canonical_outcome:'',event_description:'',outcome_equivalence:'',equivalence_mapping:'direct',resolution_source:'',resolution_criteria:'',expiration:'',settlement_details:'',verification_status:'unverified',reviewer:''}
 type Trade = {trade_id:string;wallet:string|null;venue:string;market_id:string;side:string;price:number;quantity:number|null;executed_at:number}
@@ -66,6 +107,10 @@ function App(){
   const [anCandles,setAnCandles]=useState<Candle[]>([])
   const [anSpread,setAnSpread]=useState<SpreadPoint[]>([])
   const [storageStats,setStorageStats]=useState<StorageStats|null>(null)
+  const [selectedSpreadPair,setSelectedSpreadPair]=useState<string>('')
+  const [scannerSubView,setScannerSubView]=useState<'scanner'|'analytics'|'registry'>('scanner')
+  const [spreadStatusFilter,setSpreadStatusFilter]=useState<string>('all')
+  const [crossVenueAnalytics,setCrossVenueAnalytics]=useState<CrossVenueAnalyticsData|null>(null)
   const [anLoading,setAnLoading]=useState(false)
   const [selected,setSelected]=useState('')
   const [search,setSearch]=useState('')
@@ -104,6 +149,10 @@ function App(){
     api<WalletRanking[]>(`/analytics/wallet-rankings?horizon=${rankingHorizon}&min_trades=${minSampleFilter}`).then(setWalletRankings).catch(()=>setWalletRankings([]))
     api<MarkoutDistribution>(`/analytics/markout-distribution?horizon=${rankingHorizon}`).then(setMarkoutDist).catch(()=>setMarkoutDist(null))
   },[page,rankingHorizon,minSampleFilter,health?.journal.snapshots])
+  useEffect(()=>{
+    if(page!=='scanner')return
+    api<CrossVenueAnalyticsData>('/cross-venue/analytics?window=24h').then(setCrossVenueAnalytics).catch(()=>setCrossVenueAnalytics(null))
+  },[page,scannerSubView,health?.journal.snapshots])
   useEffect(()=>{
     if(!wallet){setMarkout(null);setWalletProfile(null);setWalletTrades([]);return}
     api<Markout>(`/wallets/${encodeURIComponent(wallet)}/markouts`).then(setMarkout).catch(()=>setMarkout(null))
@@ -149,7 +198,321 @@ function App(){
         <div className="bottom-grid"><section className="panel compact"><div className="mini-icon blue"><Database size={19}/></div><div><div className="mini-label">PERSISTED EVENTS</div><strong>{(health?.journal.events||0).toLocaleString()}</strong><span> in local journal</span></div></section><section className="panel compact"><div className="mini-icon purple"><Gauge size={19}/></div><div><div className="mini-label">SNAPSHOT RECOVERIES</div><strong>{health?.counters.recoveries||0}</strong><span> total</span></div></section><section className="panel compact"><div className="mini-icon teal"><Wallet size={19}/></div><div><div className="mini-label">TRACKED WALLETS</div><strong>{wallets.length}</strong><span> with trade records</span></div></section></div>
       </>}
       {page==='orderbook'&&<><div className="toolbar"><label className="input-search"><Search size={16}/><input placeholder="Filter markets..." value={search} onChange={e=>setSearch(e.target.value)}/></label><select value={active?`${active.venue}:${active.market_id}`:''} onChange={e=>setSelected(e.target.value)}>{filtered.map(b=><option key={`${b.venue}:${b.market_id}`} value={`${b.venue}:${b.market_id}`}>{venueName(b.venue)} · {short(b.market_id)}</option>)}</select></div>{active?<><div className="panel-foot">Book: {bookReliable(active)?'VALID':bookStale(active)?'STALE':(active.recovery_status||'RECOVERING').toUpperCase()} · Last event: {lastEvent(active.last_received_timestamp)} · {venueName(active.venue)} feed: {health?.feeds[active.venue]||'waiting'}</div><div className="stats-grid three"><Stat label="BEST BID" value={price(bookReliable(active)?active.best_bid:null)} note={venueName(active.venue)} icon={<ArrowUpRight size={18}/>} tone="green"/><Stat label="BEST ASK" value={price(bookReliable(active)?active.best_ask:null)} note="Normalized YES contract" icon={<ArrowDownRight size={18}/>} tone="red"/><Stat label="SPREAD" value={!bookReliable(active)||active.best_bid==null||active.best_ask==null?'—':signed(active.best_ask-active.best_bid)} note={`Sequence ${active.sequence}`} icon={<Activity size={18}/>} /></div><div className="two-col"><Ladder title="Ask depth" side="ask" levels={bookReliable(active)?active.asks:[]}/><Ladder title="Bid depth" side="bid" levels={bookReliable(active)?active.bids:[]}/></div><div className="bottom-grid two"><section className="panel compact"><div className="mini-icon blue"><BarChart3 size={19}/></div><div><div className="mini-label">BUY VWAP · 10 CONTRACTS</div><strong>{price(bookReliable(active)?active.buy_vwap_10:null)}</strong></div></section><section className="panel compact"><div className="mini-icon purple"><Activity size={19}/></div><div><div className="mini-label">ORDER FLOW IMBALANCE</div><strong>{bookReliable(active)?(active.imbalance*100).toFixed(1)+'%':'—'}</strong></div></section></div></>:<Empty text="No orderbook is available yet"/>}</>}
-      {page==='scanner'&&<><section className="panel"><PanelHead eyebrow="VERIFIED PAIRS ONLY" title="Cross-venue Arbitrage & Spread Scanner"/><div className="table-wrap"><table><thead><tr><th>EVENT / OUTCOME</th><th>MAP</th><th className="num">POLY BID / ASK</th><th className="num">KALSHI BID / ASK</th><th className="num">SPREAD</th><th className="num">DEPTH</th><th>OPPORTUNITY</th></tr></thead><tbody>{sortedSpreads.map(s=><tr key={s.name}><td className="market-name"><strong>{s.canonical_event||s.name}</strong><br/><small style={{color:'var(--text-muted)'}}>{s.canonical_outcome||(s.equivalence_mapping==='inverse'?'Poly YES ↔ Kalshi NO':'Direct YES ↔ YES')}</small></td><td><span className={`badge ${s.equivalence_mapping==='inverse'?'badge-purple':'badge-cyan'}`}>{(s.equivalence_mapping||'direct').toUpperCase()}</span></td><td className="num">{price(s.polymarket.best_bid)} / {price(s.polymarket.best_ask)}</td><td className="num">{price(s.kalshi.best_bid)} / {price(s.kalshi.best_ask)}</td><td className={`num ${(s.best_spread??0)>0?'green':'red'}`}><strong>{signed(s.best_spread)}</strong>{s.best_spread_bps!=null&&<><br/><small>{s.best_spread_bps>0?'+':''}{s.best_spread_bps.toFixed(0)} bps</small></>}</td><td className="num">{s.executable_qty!=null?s.executable_qty.toLocaleString():'—'}</td><td>{s.is_arbitrage?<span className="badge badge-green">{(s.opportunity_type||'ARBITRAGE').replace(/_/g,' ').toUpperCase()}</span>:<span className="badge badge-muted">NO ARB</span>}</td></tr>)}</tbody></table>{!spreads.length&&<Empty text="No verified pairs with active orderbooks available"/>}</div><div className="panel-foot">Executable quotes from verified pairs. Net spread reflects fee estimation. Title matching alone is prohibited.</div></section><section className="panel"><PanelHead eyebrow="OPERATOR REVIEW" title="Verified Contract Registry"/><form className="contract-form" onSubmit={saveContract}><label>Polymarket asset ID<input required value={contractForm.polymarket_asset_id} onChange={e=>setContractForm({...contractForm,polymarket_asset_id:e.target.value})}/></label><label>Kalshi ticker<input required value={contractForm.kalshi_ticker} onChange={e=>setContractForm({...contractForm,kalshi_ticker:e.target.value})}/></label><label>Canonical Event<input required placeholder="e.g. FOMC Target Rate Decision" value={contractForm.canonical_event||contractForm.event_description} onChange={e=>setContractForm({...contractForm,canonical_event:e.target.value,event_description:e.target.value})}/></label><label>Canonical Outcome<input placeholder="e.g. Rate cuts ≥ 25 bps" value={contractForm.canonical_outcome||contractForm.outcome_equivalence} onChange={e=>setContractForm({...contractForm,canonical_outcome:e.target.value,outcome_equivalence:e.target.value})}/></label><label>Equivalence Mapping<select value={contractForm.equivalence_mapping||'direct'} onChange={e=>setContractForm({...contractForm,equivalence_mapping:e.target.value as 'direct'|'inverse'})}><option value="direct">Direct (Poly YES == Kalshi YES)</option><option value="inverse">Inverse (Poly YES == Kalshi NO)</option></select></label><label>Resolution source<input required placeholder="e.g. Federal Reserve H.4.1 Release" value={contractForm.resolution_source} onChange={e=>setContractForm({...contractForm,resolution_source:e.target.value})}/></label><label>Resolution criteria<textarea placeholder="Explicit textual criteria required for verification" value={contractForm.resolution_criteria||''} onChange={e=>setContractForm({...contractForm,resolution_criteria:e.target.value})}/></label><label>Settlement details<input placeholder="e.g. Polymarket USDC via UMA; Kalshi USD under CFTC" value={contractForm.settlement_details||''} onChange={e=>setContractForm({...contractForm,settlement_details:e.target.value})}/></label><label>Expiration (UTC)<input type="datetime-local" required value={contractForm.expiration.slice(0,16)} onChange={e=>setContractForm({...contractForm,expiration:e.target.value})}/></label><label>Reviewer ID<input placeholder="Operator identity (required if verified)" value={contractForm.reviewer||''} onChange={e=>setContractForm({...contractForm,reviewer:e.target.value})}/></label><label>Verification status<select value={contractForm.verification_status} onChange={e=>setContractForm({...contractForm,verification_status:e.target.value as ContractPair['verification_status']})}><option value="unverified">Unverified</option><option value="verified">Verified by operator</option><option value="rejected">Rejected</option><option value="incompatible">Incompatible</option></select></label><div className="contract-actions"><button type="submit">Save review</button><button type="button" onClick={()=>setContractForm(emptyContract)}>Clear</button></div></form>{contractError&&<div className="alert">{contractError}</div>}<div className="contract-list">{contracts.map(pair=><div key={`${pair.polymarket_asset_id}:${pair.kalshi_ticker}`}><strong>{pair.canonical_event||pair.event_description}</strong><span><span className={`badge ${pair.verification_status==='verified'?'badge-green':pair.verification_status==='rejected'?'badge-red':'badge-muted'}`}>{pair.verification_status.toUpperCase()}</span> · <span className="badge badge-purple">{(pair.equivalence_mapping||'direct').toUpperCase()}</span> · {short(pair.polymarket_asset_id)} ↔ {pair.kalshi_ticker}</span><span>Outcome: {pair.canonical_outcome||pair.outcome_equivalence}</span><span>Source: {pair.resolution_source} · Expires {new Date(pair.expiration).toLocaleString()}</span>{pair.reviewer&&<span>Reviewed by: {pair.reviewer} {pair.verified_at?`on ${new Date(pair.verified_at).toLocaleDateString()}`:''}</span>}<button onClick={()=>setContractForm({...pair,expiration:pair.expiration.slice(0,16)})}>Edit</button><button onClick={()=>deleteContract(pair)}>Delete</button></div>)}</div>{!contracts.length&&<Empty text="No manually reviewed contract pairs"/>}</section></>}
+      {page==='scanner'&&(()=>{
+        const activeSpread = spreads.find(s => (s.pair_id || `${s.polymarket.market_id}:${s.kalshi.market_id}` || s.name) === selectedSpreadPair) || sortedSpreads[0]
+        const filteredSpreads = sortedSpreads.filter(s => {
+          if (spreadStatusFilter === 'all') return true
+          if (spreadStatusFilter === 'executable') return s.status === 'executable' || s.is_arbitrage
+          if (spreadStatusFilter === 'candidate') return s.status === 'candidate'
+          if (spreadStatusFilter === 'stale') return s.status === 'stale'
+          if (spreadStatusFilter === 'insufficient_liquidity') return s.status === 'insufficient_liquidity'
+          return true
+        })
+        const execCount = sortedSpreads.filter(s => s.status === 'executable' || s.is_arbitrage).length
+        const maxNetSpread = sortedSpreads.length ? Math.max(...sortedSpreads.map(s => s.net_spread ?? s.best_spread ?? -1)) : null
+        const maxNetBps = sortedSpreads.length ? Math.max(...sortedSpreads.map(s => s.best_spread_bps ?? 0)) : null
+
+        return <>
+          <div className="demo-banner">
+            <ShieldCheck size={16}/>
+            <span>CROSS-VENUE ARBITRAGE &amp; MICROSTRUCTURE SCANNER</span>
+            Enforces strict contract equivalence, depth-aware execution VWAP, non-linear Kalshi taker fee formulas, quote freshness synchronization, and 8-state opportunity classification.
+          </div>
+
+          <div className="stats-grid">
+            <Stat label="REVIEWED PAIRS" value={String(contracts.length).padStart(2,'0')} note="Operator verified" icon={<BookOpen size={18}/>} />
+            <Stat label="EXECUTABLE ARBITRAGE" value={String(execCount).padStart(2,'0')} note="Net positive after fees" icon={<Activity size={18}/>} tone={execCount > 0 ? "green" : undefined} />
+            <Stat label="MAX NET SPREAD" value={maxNetBps != null && maxNetBps > 0 ? `${maxNetBps.toFixed(0)} bps` : '—'} note={maxNetSpread != null ? signed(maxNetSpread) : 'Across pairs'} icon={<ArrowUpRight size={18}/>} tone={maxNetBps != null && maxNetBps > 0 ? "green" : undefined} />
+            <Stat label="SCANNER SYNC" value={health?.feeds['kalshi']==='connected'||health?.feeds['kalshi']==='demo' ? 'SYNCED' : 'PARTIAL'} note={`Δ max 5s threshold`} icon={<Gauge size={18}/>} />
+          </div>
+
+          <div className="toolbar" style={{alignItems:'center'}}>
+            <div className="time-pills">
+              <button className={`time-pill ${scannerSubView==='scanner'?'active':''}`} onClick={()=>setScannerSubView('scanner')}>OPPORTUNITY SCANNER</button>
+              <button className={`time-pill ${scannerSubView==='analytics'?'active':''}`} onClick={()=>setScannerSubView('analytics')}>HISTORICAL ANALYTICS</button>
+              <button className={`time-pill ${scannerSubView==='registry'?'active':''}`} onClick={()=>setScannerSubView('registry')}>OPERATOR REGISTRY</button>
+            </div>
+            {scannerSubView==='scanner' && <div className="time-pills">
+              <button className={`time-pill ${spreadStatusFilter==='all'?'active':''}`} onClick={()=>setSpreadStatusFilter('all')}>ALL</button>
+              <button className={`time-pill ${spreadStatusFilter==='executable'?'active':''}`} onClick={()=>setSpreadStatusFilter('executable')}>EXECUTABLE</button>
+              <button className={`time-pill ${spreadStatusFilter==='candidate'?'active':''}`} onClick={()=>setSpreadStatusFilter('candidate')}>CANDIDATE</button>
+              <button className={`time-pill ${spreadStatusFilter==='insufficient_liquidity'?'active':''}`} onClick={()=>setSpreadStatusFilter('insufficient_liquidity')}>LOW LIQ</button>
+              <button className={`time-pill ${spreadStatusFilter==='stale'?'active':''}`} onClick={()=>setSpreadStatusFilter('stale')}>STALE</button>
+            </div>}
+          </div>
+
+          {scannerSubView==='scanner' && <>
+            <section className="panel" style={{marginBottom:'19px'}}>
+              <PanelHead eyebrow="OPPORTUNITY SCANNER (CLICK PAIR TO INSPECT)" title="Cross-Venue Spread &amp; Execution Table"/>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>EVENT / OUTCOME</th>
+                      <th>MAP</th>
+                      <th>ROUTE</th>
+                      <th className="num">POLY BID/ASK</th>
+                      <th className="num">KALSHI BID/ASK</th>
+                      <th className="num">GROSS SPREAD</th>
+                      <th className="num">NET SPREAD</th>
+                      <th className="num">DEPTH</th>
+                      <th>QUOTE AGE &amp; Δ</th>
+                      <th>STATUS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredSpreads.map(s => {
+                      const pairKey = s.pair_id || `${s.polymarket.market_id}:${s.kalshi.market_id}` || s.name
+                      const isChosen = (activeSpread?.pair_id || `${activeSpread?.polymarket.market_id}:${activeSpread?.kalshi.market_id}` || activeSpread?.name) === pairKey
+                      const isExec = s.status === 'executable' || s.is_arbitrage
+                      const statusClass = isExec ? 'badge-green' : s.status === 'stale' ? 'badge-red' : s.status === 'insufficient_liquidity' ? 'badge-yellow' : 'badge-cyan'
+                      const opp = s.opportunity_type || 'none'
+                      const route = opp.includes('poly') && !opp.includes('short_poly') ? 'Poly → Kalshi' : opp.includes('kalshi') && !opp.includes('short_kalshi') ? 'Kalshi → Poly' : opp === 'mint_both_long' ? 'Mint Both' : opp === 'merge_both_short' ? 'Merge Both' : 'Neutral'
+                      return (
+                        <tr key={pairKey} className={isChosen ? 'chosen' : ''} onClick={()=>setSelectedSpreadPair(pairKey)}>
+                          <td className="market-name">
+                            <strong>{s.canonical_event || s.name}</strong><br/>
+                            <small style={{color:'var(--text-muted)'}}>{s.canonical_outcome || (s.equivalence_mapping==='inverse'?'Poly YES ↔ Kalshi NO':'Direct YES ↔ YES')}</small>
+                          </td>
+                          <td><span className={`badge ${s.equivalence_mapping==='inverse'?'badge-purple':'badge-cyan'}`}>{(s.equivalence_mapping||'direct').toUpperCase()}</span></td>
+                          <td><span className="mono" style={{fontSize:'10px',color:'#c3d0e0'}}>{route}</span></td>
+                          <td className="num">{price(s.polymarket.best_bid)} / {price(s.polymarket.best_ask)}</td>
+                          <td className="num">{price(s.kalshi.best_bid)} / {price(s.kalshi.best_ask)}</td>
+                          <td className={`num ${(s.best_spread??0)>0?'green':'red'}`}>
+                            <strong>{signed(s.best_spread)}</strong>
+                            {s.best_spread_bps!=null&&<><br/><small>{s.best_spread_bps>0?'+':''}{s.best_spread_bps.toFixed(0)} bps</small></>}
+                          </td>
+                          <td className={`num ${(s.net_spread??s.best_spread??0)>0?'green':'red'}`}>
+                            <strong>{signed(s.net_spread ?? s.best_spread)}</strong>
+                          </td>
+                          <td className="num">{s.executable_qty!=null?s.executable_qty.toLocaleString():'—'}</td>
+                          <td>
+                            <span className="mono" style={{fontSize:'10px',color: (s.quote_age_seconds?.venue_delta ?? 0) > 5 ? '#efaaaa' : '#94a3b8'}}>
+                              {s.quote_age_seconds ? `P:${s.quote_age_seconds.polymarket}s K:${s.quote_age_seconds.kalshi}s Δ:${s.quote_age_seconds.venue_delta}s` : '—'}
+                            </span>
+                          </td>
+                          <td><span className={`badge ${statusClass}`}>{(s.status || (isExec ? 'EXECUTABLE' : 'CANDIDATE')).replace(/_/g,' ').toUpperCase()}</span></td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                {!spreads.length && <Empty text="No verified contract pairs currently streaming valid orderbooks"/>}
+              </div>
+              <div className="panel-foot">Click any pair above to inspect orderbook ladders, multi-size depth VWAP, fee haircuts, and settlement criteria.</div>
+            </section>
+
+            {activeSpread && <div className="two-col">
+              <section className="panel">
+                <PanelHead eyebrow="MARKET ORDERBOOK COMPARISON" title={`${activeSpread.canonical_event || activeSpread.name}`}/>
+                <div style={{padding:'14px 20px',borderBottom:'1px solid #263448',fontSize:'11px',color:'#8c9eb0',display:'flex',gap:'15px',flexWrap:'wrap'}}>
+                  <div>MAPPING: <span className={`badge ${activeSpread.equivalence_mapping==='inverse'?'badge-purple':'badge-cyan'}`}>{(activeSpread.equivalence_mapping||'direct').toUpperCase()}</span></div>
+                  <div>POLY BID/ASK: <strong style={{color:'#e8edf4'}}>{price(activeSpread.polymarket.best_bid)} / {price(activeSpread.polymarket.best_ask)}</strong></div>
+                  <div>KALSHI BID/ASK: <strong style={{color:'#e8edf4'}}>{price(activeSpread.kalshi.best_bid)} / {price(activeSpread.kalshi.best_ask)}</strong></div>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1px',background:'#263448'}}>
+                  <div style={{background:'#121b27',padding:'12px'}}>
+                    <div style={{color:'#8bb8f4',font:'600 11px IBM Plex Mono',marginBottom:'8px'}}>POLYMARKET BOOK</div>
+                    <Ladder title="Poly Asks" side="ask" levels={activeSpread.polymarket.asks || []}/>
+                    <Ladder title="Poly Bids" side="bid" levels={activeSpread.polymarket.bids || []}/>
+                  </div>
+                  <div style={{background:'#121b27',padding:'12px'}}>
+                    <div style={{color:'#a7e1ae',font:'600 11px IBM Plex Mono',marginBottom:'8px'}}>KALSHI BOOK</div>
+                    <Ladder title="Kalshi Asks" side="ask" levels={activeSpread.kalshi.asks || []}/>
+                    <Ladder title="Kalshi Bids" side="bid" levels={activeSpread.kalshi.bids || []}/>
+                  </div>
+                </div>
+              </section>
+
+              <div>
+                <section className="panel" style={{marginBottom:'19px'}}>
+                  <PanelHead eyebrow="DEPTH-AWARE VWAP &amp; FEE BREAKDOWN" title="Execution Ladder"/>
+                  {activeSpread.vwap_by_size ? <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>SIZE</th>
+                          <th>STATUS</th>
+                          <th className="num">BUY VWAP</th>
+                          <th className="num">SELL VWAP</th>
+                          <th className="num">VWAP SPREAD</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(activeSpread.vwap_by_size).map(([sz, res]) => (
+                          <tr key={sz}>
+                            <td className="mono">{sz} UNITS</td>
+                            <td><span className={`badge ${res.fillable ? 'badge-green' : 'badge-yellow'}`}>{res.fillable ? 'FILLABLE' : `MAX: ${res.max_available ?? 0}`}</span></td>
+                            <td className="num">{price(res.buy_vwap ?? res.poly_ask_vwap ?? res.kalshi_ask_vwap)}</td>
+                            <td className="num">{price(res.sell_vwap ?? res.kalshi_bid_vwap ?? res.poly_bid_vwap)}</td>
+                            <td className={`num ${(res.vwap_spread ?? 0) > 0 ? 'green' : 'red'}`}>{signed(res.vwap_spread)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div> : <div style={{padding:'16px',color:'#718398'}}>Ladder VWAP available for verified active depth.</div>}
+                </section>
+
+                <section className="panel">
+                  <PanelHead eyebrow="SETTLEMENT DETAILS &amp; DIAGNOSTICS" title="Contract Evidence"/>
+                  <div style={{padding:'16px 20px',fontSize:'11px',display:'grid',gap:'9px'}}>
+                    <div><strong>RESOLUTION SOURCE:</strong> <span style={{color:'#c3d0e0'}}>{activeSpread.resolution_source || 'Authoritative source required'}</span></div>
+                    <div><strong>CRITERIA:</strong> <span style={{color:'#c3d0e0'}}>{activeSpread.resolution_criteria || 'Matching on title alone is strictly prohibited.'}</span></div>
+                    <div><strong>EXPIRATION:</strong> <span className="mono" style={{color:'#c3d0e0'}}>{activeSpread.expiration ? new Date(activeSpread.expiration).toLocaleString() : '—'}</span></div>
+                    <div><strong>FEE SCHEDULE:</strong> <span className="mono" style={{color:'#c3d0e0'}}>v2026.1 (Kalshi CFTC taker formula + Polymarket 0bps CLOB + 10bps slippage)</span></div>
+                    {activeSpread.status !== 'executable' && <div className="alert" style={{margin:'8px 0 0'}}>
+                      <span>REJECTION REASON:</span> {activeSpread.status === 'candidate' ? 'Gross spread is positive but net spread after known trading fees and slippage is ≤ 0.' : activeSpread.status === 'stale' ? 'Quotes exceed maximum freshness threshold (10s quote age or 5s cross-venue delta).' : activeSpread.status === 'insufficient_liquidity' ? 'Top-of-book depth is 0 at one or both venues.' : 'Contract verification or book integrity pending.'}
+                    </div>}
+                  </div>
+                </section>
+              </div>
+            </div>}
+          </>}
+
+          {scannerSubView==='analytics' && <>
+            <div className="stats-grid">
+              <Stat label="HISTORICAL OBS" value={crossVenueAnalytics?.quote_freshness?.sample_count ? String(crossVenueAnalytics.quote_freshness.sample_count).padStart(2,'0') : '0'} note="24h telemetry window" icon={<Database size={18}/>} />
+              <Stat label="MEDIAN OPPORTUNITY" value={crossVenueAnalytics?.duration_stats?.median_duration_seconds != null ? `${crossVenueAnalytics.duration_stats.median_duration_seconds.toFixed(1)}s` : '—'} note="Duration available" icon={<Activity size={18}/>} />
+              <Stat label="POLY AVERAGE QUOTE AGE" value={crossVenueAnalytics?.quote_freshness?.avg_quote_age_poly != null ? `${crossVenueAnalytics.quote_freshness.avg_quote_age_poly.toFixed(2)}s` : '—'} note="Freshness latency" icon={<Gauge size={18}/>} />
+              <Stat label="VENUE DESYNC EVENTS" value={String(crossVenueAnalytics?.quote_freshness?.desync_count ?? 0)} note="Δ > 5.0s desynchronization" icon={<ArrowDownRight size={18}/>} tone={(crossVenueAnalytics?.quote_freshness?.desync_count ?? 0) > 0 ? "red" : "green"} />
+            </div>
+
+            <section className="panel" style={{marginBottom:'19px'}}>
+              <PanelHead eyebrow="TOP VERIFIED SPREAD PAIRS (CLICKHOUSE HISTORICAL)" title="Top Historical Spreads (N ≥ 5 Guardrail)"/>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>PAIR ID</th>
+                      <th>CANONICAL EVENT</th>
+                      <th>MAP</th>
+                      <th className="num">OBS</th>
+                      <th className="num">AVG GROSS</th>
+                      <th className="num">AVG NET SPREAD</th>
+                      <th className="num">MAX NET</th>
+                      <th className="num">AVG DEPTH</th>
+                      <th className="num">EXEC RATE %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(crossVenueAnalytics?.top_spread_pairs || []).map(p => (
+                      <tr key={p.pair_id}>
+                        <td className="mono"><strong>{p.pair_id}</strong></td>
+                        <td className="market-name">{p.canonical_event}</td>
+                        <td><span className={`badge ${p.equivalence_mapping==='inverse'?'badge-purple':'badge-cyan'}`}>{p.equivalence_mapping.toUpperCase()}</span></td>
+                        <td className="num">{p.total_observations}</td>
+                        <td className="num">{signed(p.avg_gross_spread)}</td>
+                        <td className={`num ${p.avg_net_spread > 0 ? 'green' : 'red'}`}><strong>{signed(p.avg_net_spread)}</strong></td>
+                        <td className="num green">{signed(p.max_net_spread)}</td>
+                        <td className="num">{p.avg_executable_qty.toLocaleString()}</td>
+                        <td className="num">{p.executable_rate_pct.toFixed(1)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!(crossVenueAnalytics?.top_spread_pairs || []).length && <Empty text="Insufficient historical observations recorded in ClickHouse yet"/>}
+              </div>
+            </section>
+
+            <div className="two-col">
+              <section className="panel">
+                <PanelHead eyebrow="OPPORTUNITY FREQUENCY &amp; FEE EROSION" title="Fee Impact &amp; Staleness Breakdown"/>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>PAIR ID</th>
+                        <th className="num">GROSS ARBS</th>
+                        <th className="num">FEE ERODED</th>
+                        <th className="num">FEE EROSION %</th>
+                        <th className="num">STALE REJECTS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(crossVenueAnalytics?.opportunity_frequency || []).map(f => (
+                        <tr key={f.pair_id}>
+                          <td className="mono"><strong>{f.pair_id}</strong></td>
+                          <td className="num">{f.gross_positive_count}</td>
+                          <td className="num red">{f.fee_eroded_count}</td>
+                          <td className="num red"><strong>{f.fee_erosion_pct.toFixed(1)}%</strong></td>
+                          <td className="num">{f.stale_rejected_count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {!(crossVenueAnalytics?.opportunity_frequency || []).length && <Empty text="No opportunity frequency records available"/>}
+                </div>
+              </section>
+
+              <section className="panel">
+                <PanelHead eyebrow="VENUE PRICING EDGE" title="Route Advantage"/>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>BUY VENUE</th>
+                        <th>SELL VENUE</th>
+                        <th className="num">OPPORTUNITIES</th>
+                        <th className="num">AVG GROSS</th>
+                        <th className="num">AVG NET</th>
+                        <th className="num">AVG DEPTH</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(crossVenueAnalytics?.venue_comparison || []).map((v, i) => (
+                        <tr key={i}>
+                          <td><Venue name={v.buy_venue}/></td>
+                          <td><Venue name={v.sell_venue}/></td>
+                          <td className="num">{v.opportunity_count}</td>
+                          <td className="num">{signed(v.avg_gross_spread)}</td>
+                          <td className={`num ${v.avg_net_spread > 0 ? 'green' : 'red'}`}>{signed(v.avg_net_spread)}</td>
+                          <td className="num">{v.avg_available_qty.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {!(crossVenueAnalytics?.venue_comparison || []).length && <Empty text="No venue comparison records available"/>}
+                </div>
+              </section>
+            </div>
+          </>}
+
+          {scannerSubView==='registry' && <>
+            <section className="panel">
+              <PanelHead eyebrow="OPERATOR REVIEW" title="Verified Contract Registry"/>
+              <form className="contract-form" onSubmit={saveContract}>
+                <label>Polymarket asset ID<input required value={contractForm.polymarket_asset_id} onChange={e=>setContractForm({...contractForm,polymarket_asset_id:e.target.value})}/></label>
+                <label>Kalshi ticker<input required value={contractForm.kalshi_ticker} onChange={e=>setContractForm({...contractForm,kalshi_ticker:e.target.value})}/></label>
+                <label>Canonical Event<input required placeholder="e.g. FOMC Target Rate Decision" value={contractForm.canonical_event||contractForm.event_description} onChange={e=>setContractForm({...contractForm,canonical_event:e.target.value,event_description:e.target.value})}/></label>
+                <label>Canonical Outcome<input placeholder="e.g. Rate cuts ≥ 25 bps" value={contractForm.canonical_outcome||contractForm.outcome_equivalence} onChange={e=>setContractForm({...contractForm,canonical_outcome:e.target.value,outcome_equivalence:e.target.value})}/></label>
+                <label>Equivalence Mapping<select value={contractForm.equivalence_mapping||'direct'} onChange={e=>setContractForm({...contractForm,equivalence_mapping:e.target.value as 'direct'|'inverse'})}><option value="direct">Direct (Poly YES == Kalshi YES)</option><option value="inverse">Inverse (Poly YES == Kalshi NO)</option></select></label>
+                <label>Resolution source<input required placeholder="e.g. Federal Reserve H.4.1 Release" value={contractForm.resolution_source} onChange={e=>setContractForm({...contractForm,resolution_source:e.target.value})}/></label>
+                <label>Resolution criteria<textarea placeholder="Explicit textual criteria required for verification" value={contractForm.resolution_criteria||''} onChange={e=>setContractForm({...contractForm,resolution_criteria:e.target.value})}/></label>
+                <label>Settlement details<input placeholder="e.g. Polymarket USDC via UMA; Kalshi USD under CFTC" value={contractForm.settlement_details||''} onChange={e=>setContractForm({...contractForm,settlement_details:e.target.value})}/></label>
+                <label>Expiration (UTC)<input type="datetime-local" required value={contractForm.expiration.slice(0,16)} onChange={e=>setContractForm({...contractForm,expiration:e.target.value})}/></label>
+                <label>Reviewer ID<input placeholder="Operator identity (required if verified)" value={contractForm.reviewer||''} onChange={e=>setContractForm({...contractForm,reviewer:e.target.value})}/></label>
+                <label>Verification status<select value={contractForm.verification_status} onChange={e=>setContractForm({...contractForm,verification_status:e.target.value as ContractPair['verification_status']})}><option value="unverified">Unverified</option><option value="verified">Verified by operator</option><option value="rejected">Rejected</option><option value="incompatible">Incompatible</option></select></label>
+                <div className="contract-actions"><button type="submit">Save review</button><button type="button" onClick={()=>setContractForm(emptyContract)}>Clear</button></div>
+              </form>
+              {contractError&&<div className="alert">{contractError}</div>}
+              <div className="contract-list">
+                {contracts.map(pair=>(
+                  <div key={`${pair.polymarket_asset_id}:${pair.kalshi_ticker}`}>
+                    <strong>{pair.canonical_event||pair.event_description}</strong>
+                    <span><span className={`badge ${pair.verification_status==='verified'?'badge-green':pair.verification_status==='rejected'?'badge-red':'badge-muted'}`}>{pair.verification_status.toUpperCase()}</span> · <span className="badge badge-purple">{(pair.equivalence_mapping||'direct').toUpperCase()}</span> · {short(pair.polymarket_asset_id)} ↔ {pair.kalshi_ticker}</span>
+                    <span>Outcome: {pair.canonical_outcome||pair.outcome_equivalence}</span>
+                    <span>Source: {pair.resolution_source} · Expires {new Date(pair.expiration).toLocaleString()}</span>
+                    {pair.reviewer&&<span>Reviewed by: {pair.reviewer} {pair.verified_at?`on ${new Date(pair.verified_at).toLocaleDateString()}`:''}</span>}
+                    <button onClick={()=>setContractForm({...pair,expiration:pair.expiration.slice(0,16)})}>Edit</button>
+                    <button onClick={()=>deleteContract(pair)}>Delete</button>
+                  </div>
+                ))}
+              </div>
+              {!contracts.length&&<Empty text="No manually reviewed contract pairs"/>}
+            </section>
+          </>}
+        </>
+      })()}
       {page==='wallets'&&<>
         <div className="demo-banner">
           <ShieldCheck size={16}/>

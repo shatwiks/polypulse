@@ -586,6 +586,193 @@ class TestCrossVenueIntelligence(unittest.TestCase):
         self.assertEqual(res_stale["status"], "stale")
         self.assertFalse(res_stale["is_arbitrage"])
 
+    def test_cross_venue_fastapi_endpoints(self):
+        """Verifies GET /api/v1/cross-venue/pairs, /fees, /spreads, /opportunities, /analytics."""
+        client = TestClient(app)
+        pair = {
+            "polymarket_asset_id": "poly_ep_1",
+            "kalshi_ticker": "KX_EP_1",
+            "canonical_event": "Endpoint Test Event",
+            "canonical_outcome": "YES",
+            "equivalence_mapping": "direct",
+            "resolution_source": "BLS Release",
+            "resolution_criteria": "Settles YES on official print",
+            "expiration": self.future_exp,
+            "verification_status": "verified",
+            "reviewer": "test_operator",
+        }
+        self.journal.save_contract_pair(pair)
+
+        # 1. GET /api/v1/cross-venue/pairs
+        r_pairs = client.get("/api/v1/cross-venue/pairs?status=verified")
+        self.assertEqual(r_pairs.status_code, 200)
+        p_data = r_pairs.json()
+        self.assertGreaterEqual(p_data["total"], 1)
+
+        # 2. GET /api/v1/cross-venue/pairs/{pair_id}
+        r_single = client.get("/api/v1/cross-venue/pairs/poly_ep_1:KX_EP_1")
+        self.assertEqual(r_single.status_code, 200)
+        self.assertEqual(r_single.json()["pair"]["polymarket_asset_id"], "poly_ep_1")
+
+        # 3. GET /api/v1/cross-venue/fees
+        r_fees = client.get("/api/v1/cross-venue/fees")
+        self.assertEqual(r_fees.status_code, 200)
+        f_data = r_fees.json()
+        self.assertEqual(f_data["default_version"], "v2026.1")
+        self.assertIn("v2026.1", f_data["schedules"])
+
+        # 4. GET /api/v1/cross-venue/opportunities
+        r_opps = client.get("/api/v1/cross-venue/opportunities")
+        self.assertEqual(r_opps.status_code, 200)
+        self.assertIn("opportunities", r_opps.json())
+
+        # 5. GET /api/v1/cross-venue/analytics
+        r_ana = client.get("/api/v1/cross-venue/analytics?window=24h")
+        self.assertEqual(r_ana.status_code, 200)
+        self.assertIn(r_ana.json()["source"], ("clickhouse", "sqlite_local"))
+
+        # 6. GET /api/v1/cross-venue/notifications
+        r_notif = client.get("/api/v1/cross-venue/notifications")
+        self.assertEqual(r_notif.status_code, 200)
+        self.assertIsInstance(r_notif.json(), list)
+
+    def test_operator_review_endpoint_with_auth(self):
+        """Verifies PUT /api/v1/cross-venue/pairs/{pair_id}/review enforces auth and records review."""
+        client = TestClient(app)
+        os.environ["OPERATOR_KEY"] = "super-secret-key-123"
+
+        pair = {
+            "polymarket_asset_id": "poly_rev_1",
+            "kalshi_ticker": "KX_REV_1",
+            "canonical_event": "Review Test Event",
+            "canonical_outcome": "YES",
+            "equivalence_mapping": "direct",
+            "resolution_source": "CFTC Order",
+            "expiration": self.future_exp,
+            "verification_status": "unverified",
+        }
+        self.journal.save_contract_pair(pair)
+
+        review_payload = {
+            "verification_status": "verified",
+            "reviewer": "senior_risk_operator",
+            "canonical_event": "Review Test Event Verified",
+            "resolution_criteria": "Settles YES per rule 4",
+        }
+
+        # 1. Without auth header -> 403
+        r_unauth = client.put("/api/v1/cross-venue/pairs/poly_rev_1:KX_REV_1/review", json=review_payload)
+        self.assertEqual(r_unauth.status_code, 403)
+
+        # 2. With valid auth header -> 200
+        r_auth = client.put(
+            "/api/v1/cross-venue/pairs/poly_rev_1:KX_REV_1/review",
+            json=review_payload,
+            headers={"X-Operator-Key": "super-secret-key-123"}
+        )
+        self.assertEqual(r_auth.status_code, 200)
+        self.assertEqual(r_auth.json()["pair"]["verification_status"], "verified")
+        self.assertEqual(r_auth.json()["pair"]["reviewer"], "senior_risk_operator")
+
+        del os.environ["OPERATOR_KEY"]
+
+    def test_notification_engine_cooldown_and_transitions(self):
+        """Verifies notification generation, deduplication within cooldown, and invalidation transitions."""
+        from backend.notifications import NotificationEngine, NotificationConfig
+
+        config = NotificationConfig(
+            min_net_spread_bps=10.0,
+            min_executable_qty=5.0,
+            cooldown_seconds=30.0
+        )
+        engine = NotificationEngine(config)
+
+        spread = {
+            "pair_id": "p_notif:k_notif",
+            "canonical_event": "Fed Rate",
+            "status": "executable",
+            "net_spread": 0.05,
+            "best_spread_bps": 1250.0,
+            "executable_qty": 100.0,
+            "opportunity_type": "long_poly_short_kalshi",
+            "polymarket": {"valid": 1},
+            "quote_age_seconds": {"polymarket": 0.5, "kalshi": 0.6, "venue_delta": 0.1}
+        }
+
+        # 1. Initial executable quote emits executable_quote event
+        ev1 = engine.evaluate_spread(spread, current_time=1000.0)
+        self.assertIsNotNone(ev1)
+        self.assertEqual(ev1.event_type, "executable_quote")
+
+        # 2. Same spread 5s later (within 30s cooldown) is dropped (returns None)
+        ev2 = engine.evaluate_spread(spread, current_time=1005.0)
+        self.assertIsNone(ev2)
+
+        # 3. Same spread 35s later (after 30s cooldown) is emitted
+        ev3 = engine.evaluate_spread(spread, current_time=1036.0)
+        self.assertIsNotNone(ev3)
+
+        # 4. Status transitions to stale -> emits invalidated_opportunity
+        stale_spread = dict(spread)
+        stale_spread["status"] = "stale"
+        ev_inv = engine.evaluate_spread(stale_spread, current_time=1040.0)
+        self.assertIsNotNone(ev_inv)
+        self.assertEqual(ev_inv.event_type, "invalidated_opportunity")
+
+    def test_durable_outbox_batch_for_cross_venue_tables(self):
+        """Verifies SQLite outbox batches for all Phase 6 cross-venue tables."""
+        # 1. Spread Observation
+        obs_id = self.journal.record_spread_observation({
+            "pair_id": "p_durable:k_durable",
+            "canonical_event": "Outbox Batch Test Event",
+            "canonical_outcome": "YES",
+            "equivalence_mapping": "direct",
+            "poly_best_bid": 0.35,
+            "poly_best_ask": 0.38,
+            "kalshi_best_bid": 0.44,
+            "kalshi_best_ask": 0.48,
+            "poly_ask_depth": 500,
+            "kalshi_bid_depth": 300,
+            "gross_spread": 0.06,
+            "gross_spread_bps": 1500.0,
+            "net_spread": 0.043,
+            "net_spread_bps": 1075.0,
+            "poly_fee": 0.0,
+            "kalshi_fee": 0.017,
+            "slippage_cost": 0.0004,
+            "executable_qty": 300,
+            "opportunity_type": "long_poly_short_kalshi",
+            "status": "executable",
+            "quote_age_poly": 0.5,
+            "quote_age_kalshi": 0.6,
+            "venue_delta_seconds": 0.1
+        })
+        self.assertIsNotNone(obs_id)
+
+        # 2. Create pending batch in SQLite
+        batch = self.journal.get_or_create_pending_batch("spread_observations")
+        self.assertIsNotNone(batch)
+        self.assertEqual(batch["target_table"], "spread_observations")
+        self.assertEqual(batch["item_count"], 1)
+        self.assertTrue(len(batch["dedup_token"]) == 64)  # SHA-256
+        self.assertEqual(batch["status"], "pending")
+
+        # 3. Acknowledge batch
+        self.journal.acknowledge_batch(batch["batch_id"])
+        acked = self.journal.get_batch(batch["batch_id"])
+        self.assertEqual(acked["status"], "acknowledged")
+
+    def test_cross_venue_websocket_feed(self):
+        """Verifies WebSocket /ws/cross-venue connects and emits initial scanner frame."""
+        client = TestClient(app)
+        with client.websocket_connect("/ws/cross-venue") as ws:
+            frame = ws.receive_json()
+            self.assertEqual(frame["type"], "initial_state")
+            self.assertIn("pairs", frame["data"])
+            self.assertIn("spreads", frame["data"])
+            self.assertIn("opportunities", frame["data"])
+            self.assertIn("venue_health", frame["data"])
+
 
 if __name__ == "__main__":
     unittest.main()

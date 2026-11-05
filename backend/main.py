@@ -12,8 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator, model_validator
+from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
 from dotenv import load_dotenv
 
 from backend.connectors import demo
@@ -26,6 +27,8 @@ from backend.wallet import normalize_address
 from backend.markout import CURRENT_CALC_VERSION
 from backend.logging_config import configure_logging
 from backend.scanner import validate_contract_compatibility
+from backend.fees import FEE_SCHEDULES, get_fee_schedule, DEFAULT_FEE_VERSION
+from backend.notifications import NotificationEngine, NotificationConfig
 
 configure_logging()
 load_dotenv()
@@ -62,6 +65,7 @@ async def lifespan(app: FastAPI):
     app.state.config = config
     app.state.storage_status = {"clickhouse": "disabled"}
     app.state.analytics = ClickHouseAnalytics(config["clickhouse"])
+    app.state.notifications = NotificationEngine()
     tasks = []
     if config["mode"] == "demo":
         tasks.append(asyncio.create_task(demo(state)))
@@ -97,6 +101,22 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http
 
 def state():
     return app.state.market
+
+
+def notifications() -> NotificationEngine:
+    if not hasattr(app.state, "notifications"):
+        app.state.notifications = NotificationEngine()
+    return app.state.notifications
+
+
+def _split_pair_id(pair_id: str) -> Tuple[str, str]:
+    if ":" in pair_id:
+        p, k = pair_id.split(":", 1)
+        return p, k
+    elif "_" in pair_id:
+        p, k = pair_id.split("_", 1)
+        return p, k
+    return pair_id, ""
 
 
 @app.get("/api/v1/markets")
@@ -273,6 +293,240 @@ async def delete_contract(polymarket_asset_id: str, kalshi_ticker: str):
     if not state().journal.delete_contract_pair(polymarket_asset_id, kalshi_ticker):
         raise HTTPException(404, "Contract pair unavailable")
     return {"deleted": True}
+
+
+class PairReviewIn(BaseModel):
+    verification_status: Literal["verified", "rejected", "incompatible", "unverified"]
+    reviewer: str = Field(min_length=1, max_length=120)
+    canonical_event: Optional[str] = None
+    canonical_outcome: Optional[str] = None
+    equivalence_mapping: Optional[Literal["direct", "inverse"]] = None
+    resolution_source: Optional[str] = None
+    resolution_criteria: Optional[str] = None
+    polymarket_expiration: Optional[datetime] = None
+    kalshi_expiration: Optional[datetime] = None
+    expiration: Optional[datetime] = None
+    settlement_details: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@app.get("/api/v1/cross-venue/pairs")
+async def cross_venue_pairs(
+    status: Optional[str] = Query(None, description="Filter: verified, unverified, rejected, incompatible, expired, all"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
+    pairs = state().journal.contract_pairs(status=status)
+    return {"total": len(pairs), "pairs": pairs[offset : offset + limit]}
+
+
+@app.get("/api/v1/cross-venue/pairs/{pair_id}")
+async def get_cross_venue_pair(pair_id: str):
+    poly_id, kalshi_ticker = _split_pair_id(pair_id)
+    pair = state().journal.get_contract_pair(poly_id, kalshi_ticker)
+    if not pair:
+        raise HTTPException(404, f"Contract pair '{pair_id}' not found")
+    poly_book = state().get("polymarket", poly_id)
+    kalshi_book = state().get("kalshi", kalshi_ticker)
+    return {
+        "pair": pair,
+        "live_books": {
+            "polymarket": poly_book,
+            "kalshi": kalshi_book
+        }
+    }
+
+
+@app.put("/api/v1/cross-venue/pairs/{pair_id}/review", dependencies=[Depends(verify_operator_access)])
+async def review_cross_venue_pair(pair_id: str, review: PairReviewIn):
+    poly_id, kalshi_ticker = _split_pair_id(pair_id)
+    journal = state().journal
+    pair = journal.get_contract_pair(poly_id, kalshi_ticker)
+    if not pair:
+        raise HTTPException(404, f"Contract pair '{pair_id}' not found")
+
+    if review.verification_status == "verified":
+        exp_str = pair.get("expiration")
+        if exp_str:
+            try:
+                exp_dt = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                if exp_dt <= datetime.now(timezone.utc):
+                    raise HTTPException(400, "Cannot verify an already expired contract pair")
+            except Exception as exc:
+                raise HTTPException(400, f"Invalid expiration date: {exc}")
+
+    pair["verification_status"] = review.verification_status
+    pair["reviewer"] = review.reviewer
+    if review.canonical_event:
+        pair["canonical_event"] = review.canonical_event
+    if review.canonical_outcome:
+        pair["canonical_outcome"] = review.canonical_outcome
+    if review.equivalence_mapping:
+        pair["equivalence_mapping"] = review.equivalence_mapping
+    if review.resolution_source:
+        pair["resolution_source"] = review.resolution_source
+    if review.resolution_criteria:
+        pair["resolution_criteria"] = review.resolution_criteria
+    if review.settlement_details:
+        pair["settlement_details"] = review.settlement_details
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    if review.verification_status == "verified":
+        pair["verified_at"] = now_iso
+    else:
+        pair["verified_at"] = None
+
+    journal.save_contract_pair(pair)
+
+    review_record = {
+        "pair_id": pair_id,
+        "polymarket_asset_id": poly_id,
+        "kalshi_ticker": kalshi_ticker,
+        "canonical_event": pair.get("canonical_event", ""),
+        "canonical_outcome": pair.get("canonical_outcome", ""),
+        "equivalence_mapping": pair.get("equivalence_mapping", "direct"),
+        "resolution_source": pair.get("resolution_source", ""),
+        "resolution_criteria": pair.get("resolution_criteria", ""),
+        "polymarket_expiration": pair.get("polymarket_expiration"),
+        "kalshi_expiration": pair.get("kalshi_expiration"),
+        "settlement_details": pair.get("settlement_details", ""),
+        "verification_status": review.verification_status,
+        "reviewer": review.reviewer,
+        "reviewed_at": now_iso
+    }
+    journal.record_contract_pair_review(review_record)
+    return {"saved": True, "pair": pair, "review_record": review_record}
+
+
+@app.get("/api/v1/cross-venue/spreads")
+async def cross_venue_spreads(
+    opportunities_only: bool = Query(False, description="Filter for positive arbitrage opportunities only"),
+    limit: int = Query(100, ge=1, le=500)
+):
+    spreads = state().spreads(opportunities_only=opportunities_only)
+    notif_engine = notifications()
+    journal = state().journal
+    for s in spreads:
+        notif_engine.evaluate_spread(s)
+        # Record spread observation in journal
+        try:
+            poly_book = s.get("polymarket", {})
+            kalshi_book = s.get("kalshi", {})
+            quote_age = s.get("quote_age_seconds", {})
+            obs_data = {
+                "pair_id": s["pair_id"],
+                "canonical_event": s.get("canonical_event", ""),
+                "canonical_outcome": s.get("canonical_outcome", ""),
+                "equivalence_mapping": s.get("equivalence_mapping", "direct"),
+                "poly_best_bid": poly_book.get("best_bid", 0.0),
+                "poly_best_ask": poly_book.get("best_ask", 0.0),
+                "kalshi_best_bid": kalshi_book.get("best_bid", 0.0),
+                "kalshi_best_ask": kalshi_book.get("best_ask", 0.0),
+                "poly_ask_depth": poly_book.get("ask_depth", 0.0),
+                "kalshi_bid_depth": kalshi_book.get("bid_depth", 0.0),
+                "gross_spread": s.get("best_spread", 0.0),
+                "gross_spread_bps": s.get("best_spread_bps", 0.0),
+                "net_spread": s.get("net_spread", 0.0),
+                "net_spread_bps": s.get("best_spread_bps", 0.0),
+                "poly_fee": s.get("poly_fee", 0.0),
+                "kalshi_fee": s.get("kalshi_fee", 0.0),
+                "slippage_cost": 0.0,
+                "executable_qty": s.get("executable_qty", 0.0),
+                "opportunity_type": s.get("opportunity_type", "none"),
+                "status": s.get("status", "candidate"),
+                "quote_age_poly": quote_age.get("polymarket", 0.0),
+                "quote_age_kalshi": quote_age.get("kalshi", 0.0),
+                "venue_delta_seconds": quote_age.get("venue_delta", 0.0),
+            }
+            journal.record_spread_observation(obs_data)
+        except Exception as exc:
+            LOG.debug("Error auto-recording spread observation: %s", exc)
+
+    return spreads[:limit]
+
+
+@app.get("/api/v1/cross-venue/opportunities")
+async def cross_venue_opportunities(
+    status: Optional[str] = Query(None, description="Status filter: candidate, executable, insufficient_liquidity, stale, all"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
+    all_spreads = state().spreads(opportunities_only=False)
+    notif_engine = notifications()
+    for s in all_spreads:
+        notif_engine.evaluate_spread(s)
+
+    if status and status != "all":
+        filtered = [s for s in all_spreads if s.get("status") == status]
+    else:
+        filtered = [s for s in all_spreads if s.get("status") in ("candidate", "executable", "insufficient_liquidity", "stale")]
+
+    return {
+        "total": len(filtered),
+        "opportunities": filtered[offset : offset + limit]
+    }
+
+
+@app.get("/api/v1/cross-venue/opportunities/{opportunity_id}")
+async def get_cross_venue_opportunity(opportunity_id: str):
+    all_spreads = state().spreads(opportunities_only=False)
+    match = next((s for s in all_spreads if s.get("pair_id") == opportunity_id or s.get("pair_id") == opportunity_id.replace("_", ":")), None)
+    if not match:
+        raise HTTPException(404, f"Opportunity '{opportunity_id}' not found in active scanner")
+    return match
+
+
+@app.get("/api/v1/cross-venue/fees")
+async def cross_venue_fees(version: Optional[str] = Query(None)):
+    if version and version in FEE_SCHEDULES:
+        return asdict(FEE_SCHEDULES[version])
+    return {
+        "default_version": DEFAULT_FEE_VERSION,
+        "schedules": {k: asdict(v) for k, v in FEE_SCHEDULES.items()}
+    }
+
+
+@app.get("/api/v1/cross-venue/analytics")
+async def cross_venue_analytics(
+    window: str = Query("24h"),
+    min_observations: int = Query(5, ge=1)
+):
+    ch = analytics()
+    if ch.enabled:
+        top_pairs = await ch.get_top_spread_pairs(min_observations=min_observations, window=window)
+        frequency = await ch.get_opportunity_frequency(min_observations=min_observations, window=window)
+        duration = await ch.get_opportunity_duration_stats(window=window)
+        venue_edge = await ch.get_venue_comparison_analytics(window=window)
+        freshness = await ch.get_quote_freshness_stats(window=window)
+        return {
+            "source": "clickhouse",
+            "window": window,
+            "min_observations": min_observations,
+            "top_spread_pairs": top_pairs,
+            "opportunity_frequency": frequency,
+            "duration_stats": duration,
+            "venue_comparison": venue_edge,
+            "quote_freshness": freshness
+        }
+
+    obs = state().journal.get_spread_observations(limit=100)
+    opps = state().journal.get_arbitrage_opportunities(limit=100)
+    return {
+        "source": "sqlite_local",
+        "window": window,
+        "observation_count": len(obs),
+        "opportunity_count": len(opps),
+        "recent_observations": obs[:20],
+        "recent_opportunities": opps[:20]
+    }
+
+
+@app.get("/api/v1/cross-venue/notifications")
+async def cross_venue_notifications(
+    pair_id: Optional[str] = Query(None),
+    event_type: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200)
+):
+    return notifications().get_history(pair_id=pair_id, event_type=event_type, limit=limit)
 
 
 @app.get("/api/v1/health")
@@ -578,5 +832,56 @@ async def wallet_socket(ws: WebSocket):
         while True:
             await ws.send_json({"type": "wallets", "data": await wallets()})
             await asyncio.sleep(5)
+    except WebSocketDisconnect:
+        pass
+
+
+@app.websocket("/ws/cross-venue")
+async def cross_venue_socket(ws: WebSocket):
+    """
+    Dedicated real-time WebSocket feed for Cross-Venue Intelligence & Arbitrage Scanner.
+    Streams initial scanner state, pair updates, spread ladders, opportunity transitions, and health telemetry.
+    """
+    await ws.accept()
+    market = state()
+    notif_engine = notifications()
+    try:
+        # Initial complete scanner frame
+        initial_pairs = market.journal.contract_pairs()
+        initial_spreads = market.spreads(opportunities_only=False)
+        initial_opps = [s for s in initial_spreads if s.get("status") == "executable"]
+        for s in initial_spreads:
+            notif_engine.evaluate_spread(s)
+
+        await ws.send_json({
+            "type": "initial_state",
+            "data": {
+                "pairs": initial_pairs,
+                "spreads": initial_spreads,
+                "opportunities": initial_opps,
+                "venue_health": market.feed_status,
+                "notifications": notif_engine.get_history(limit=5),
+                "server_time": datetime.now(timezone.utc).isoformat()
+            }
+        })
+
+        # Periodic non-blocking scanner updates (1s frequency)
+        while True:
+            await asyncio.sleep(1.0)
+            current_spreads = market.spreads(opportunities_only=False)
+            current_opps = [s for s in current_spreads if s.get("status") == "executable"]
+            for s in current_spreads:
+                notif_engine.evaluate_spread(s)
+
+            await ws.send_json({
+                "type": "scanner_update",
+                "data": {
+                    "spreads": current_spreads,
+                    "opportunities": current_opps,
+                    "venue_health": market.feed_status,
+                    "notifications": notif_engine.get_history(limit=5),
+                    "server_time": datetime.now(timezone.utc).isoformat()
+                }
+            })
     except WebSocketDisconnect:
         pass

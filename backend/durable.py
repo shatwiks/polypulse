@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 
 import httpx
 
@@ -169,6 +170,119 @@ class DurableJournal(Journal):
             SET status = 'pending', acknowledged_at = NULL
             WHERE batch_id IN (SELECT batch_id FROM export_batch_items WHERE source_table = 'trade_markouts' AND item_id = (NEW.trade_id || ':' || NEW.horizon_seconds || ':' || NEW.calc_version));
         END;
+
+        CREATE TABLE IF NOT EXISTS contract_pair_reviews (
+          review_id TEXT PRIMARY KEY,
+          pair_id TEXT NOT NULL,
+          polymarket_asset_id TEXT NOT NULL,
+          kalshi_ticker TEXT NOT NULL,
+          canonical_event TEXT NOT NULL,
+          canonical_outcome TEXT NOT NULL,
+          equivalence_mapping TEXT NOT NULL,
+          resolution_source TEXT NOT NULL,
+          resolution_criteria TEXT NOT NULL,
+          polymarket_expiration TEXT,
+          kalshi_expiration TEXT,
+          settlement_details TEXT,
+          verification_status TEXT NOT NULL,
+          reviewer TEXT NOT NULL,
+          reviewed_at TEXT NOT NULL,
+          exported INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_contract_pair_reviews_pair ON contract_pair_reviews(pair_id, reviewed_at);
+
+        CREATE TABLE IF NOT EXISTS cross_venue_quotes (
+          quote_id TEXT PRIMARY KEY,
+          pair_id TEXT NOT NULL,
+          venue TEXT NOT NULL,
+          market_id TEXT NOT NULL,
+          outcome_id TEXT NOT NULL,
+          best_bid REAL NOT NULL,
+          best_ask REAL NOT NULL,
+          bid_depth REAL NOT NULL,
+          ask_depth REAL NOT NULL,
+          exchange_timestamp TEXT,
+          received_timestamp TEXT NOT NULL,
+          quote_age_seconds REAL NOT NULL,
+          valid INTEGER NOT NULL DEFAULT 1,
+          exported INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_cross_venue_quotes_pair ON cross_venue_quotes(pair_id, venue, received_timestamp);
+
+        CREATE TABLE IF NOT EXISTS spread_observations (
+          observation_id TEXT PRIMARY KEY,
+          pair_id TEXT NOT NULL,
+          canonical_event TEXT NOT NULL,
+          canonical_outcome TEXT NOT NULL,
+          equivalence_mapping TEXT NOT NULL,
+          observed_at TEXT NOT NULL,
+          poly_best_bid REAL NOT NULL,
+          poly_best_ask REAL NOT NULL,
+          kalshi_best_bid REAL NOT NULL,
+          kalshi_best_ask REAL NOT NULL,
+          poly_ask_depth REAL NOT NULL,
+          kalshi_bid_depth REAL NOT NULL,
+          gross_spread REAL NOT NULL,
+          gross_spread_bps REAL NOT NULL,
+          net_spread REAL NOT NULL,
+          net_spread_bps REAL NOT NULL,
+          poly_fee REAL NOT NULL,
+          kalshi_fee REAL NOT NULL,
+          slippage_cost REAL NOT NULL,
+          executable_qty REAL NOT NULL,
+          opportunity_type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          quote_age_poly REAL NOT NULL,
+          quote_age_kalshi REAL NOT NULL,
+          venue_delta_seconds REAL NOT NULL,
+          exported INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_spread_obs_pair ON spread_observations(pair_id, observed_at);
+
+        CREATE TABLE IF NOT EXISTS arbitrage_opportunities (
+          opportunity_id TEXT PRIMARY KEY,
+          pair_id TEXT NOT NULL,
+          opportunity_type TEXT NOT NULL,
+          buy_venue TEXT NOT NULL,
+          sell_venue TEXT NOT NULL,
+          canonical_event TEXT NOT NULL,
+          canonical_outcome TEXT NOT NULL,
+          status TEXT NOT NULL,
+          gross_spread REAL NOT NULL,
+          gross_spread_bps REAL NOT NULL,
+          net_spread REAL NOT NULL,
+          net_spread_bps REAL NOT NULL,
+          available_qty REAL NOT NULL,
+          vwap_entry REAL NOT NULL,
+          vwap_exit REAL NOT NULL,
+          fee_version TEXT NOT NULL,
+          poly_fee REAL NOT NULL,
+          kalshi_fee REAL NOT NULL,
+          slippage_bps REAL NOT NULL,
+          first_observed_at TEXT NOT NULL,
+          last_observed_at TEXT NOT NULL,
+          duration_seconds REAL NOT NULL,
+          observation_count INTEGER NOT NULL,
+          exported INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_arb_opps_pair ON arbitrage_opportunities(pair_id, status, last_observed_at);
+
+        CREATE TABLE IF NOT EXISTS fee_schedule_versions (
+          version TEXT PRIMARY KEY,
+          effective_date TEXT NOT NULL,
+          source TEXT NOT NULL,
+          polymarket_maker_bps REAL NOT NULL,
+          polymarket_taker_bps REAL NOT NULL,
+          polymarket_settlement_fee_pct REAL NOT NULL,
+          kalshi_maker_bps REAL NOT NULL,
+          kalshi_taker_formula TEXT NOT NULL,
+          kalshi_max_taker_fee REAL NOT NULL,
+          kalshi_min_fee REAL NOT NULL,
+          default_slippage_bps REAL NOT NULL,
+          notes TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          exported INTEGER NOT NULL DEFAULT 0
+        );
         """)
 
         # Automated schema column migration for existing sqlite journals
@@ -420,6 +534,56 @@ class DurableJournal(Journal):
                 LIMIT ?
             """, (limit,)).fetchall()
             return "trade_markouts", [dict(r) for r in rows]
+        elif target_table == "contract_pair_reviews":
+            rows = self.db.execute("""
+                SELECT c.* FROM contract_pair_reviews c
+                LEFT JOIN export_batch_items bi
+                  ON bi.target_table = 'contract_pair_reviews' AND bi.source_table = 'contract_pair_reviews' AND bi.item_id = c.review_id
+                WHERE bi.item_id IS NULL
+                ORDER BY c.rowid ASC
+                LIMIT ?
+            """, (limit,)).fetchall()
+            return "contract_pair_reviews", [dict(r) for r in rows]
+        elif target_table == "cross_venue_quotes":
+            rows = self.db.execute("""
+                SELECT q.* FROM cross_venue_quotes q
+                LEFT JOIN export_batch_items bi
+                  ON bi.target_table = 'cross_venue_quotes' AND bi.source_table = 'cross_venue_quotes' AND bi.item_id = q.quote_id
+                WHERE bi.item_id IS NULL
+                ORDER BY q.rowid ASC
+                LIMIT ?
+            """, (limit,)).fetchall()
+            return "cross_venue_quotes", [dict(r) for r in rows]
+        elif target_table == "spread_observations":
+            rows = self.db.execute("""
+                SELECT s.* FROM spread_observations s
+                LEFT JOIN export_batch_items bi
+                  ON bi.target_table = 'spread_observations' AND bi.source_table = 'spread_observations' AND bi.item_id = s.observation_id
+                WHERE bi.item_id IS NULL
+                ORDER BY s.rowid ASC
+                LIMIT ?
+            """, (limit,)).fetchall()
+            return "spread_observations", [dict(r) for r in rows]
+        elif target_table == "arbitrage_opportunities":
+            rows = self.db.execute("""
+                SELECT a.* FROM arbitrage_opportunities a
+                LEFT JOIN export_batch_items bi
+                  ON bi.target_table = 'arbitrage_opportunities' AND bi.source_table = 'arbitrage_opportunities' AND bi.item_id = a.opportunity_id
+                WHERE bi.item_id IS NULL
+                ORDER BY a.rowid ASC
+                LIMIT ?
+            """, (limit,)).fetchall()
+            return "arbitrage_opportunities", [dict(r) for r in rows]
+        elif target_table == "fee_schedule_versions":
+            rows = self.db.execute("""
+                SELECT f.* FROM fee_schedule_versions f
+                LEFT JOIN export_batch_items bi
+                  ON bi.target_table = 'fee_schedule_versions' AND bi.source_table = 'fee_schedule_versions' AND bi.item_id = f.version
+                WHERE bi.item_id IS NULL
+                ORDER BY f.rowid ASC
+                LIMIT ?
+            """, (limit,)).fetchall()
+            return "fee_schedule_versions", [dict(r) for r in rows]
         else:
             raise ValueError(f"Unknown target ClickHouse table: {target_table}")
 
@@ -491,6 +655,109 @@ class DurableJournal(Journal):
                 "token_id": row.get("token_id"),
                 "condition_id": row.get("condition_id")
             } for row in items]
+        elif target_table == "contract_pair_reviews":
+            return [{
+                "pair_id": row["pair_id"],
+                "polymarket_asset_id": row["polymarket_asset_id"],
+                "kalshi_ticker": row["kalshi_ticker"],
+                "canonical_event": row["canonical_event"],
+                "canonical_outcome": row["canonical_outcome"],
+                "equivalence_mapping": row["equivalence_mapping"],
+                "resolution_source": row["resolution_source"],
+                "resolution_criteria": row["resolution_criteria"],
+                "polymarket_expiration": row["polymarket_expiration"],
+                "kalshi_expiration": row["kalshi_expiration"],
+                "settlement_details": row["settlement_details"],
+                "verification_status": row["verification_status"],
+                "reviewer": row["reviewer"],
+                "reviewed_at": row["reviewed_at"]
+            } for row in items]
+        elif target_table == "cross_venue_quotes":
+            return [{
+                "quote_id": row["quote_id"],
+                "pair_id": row["pair_id"],
+                "venue": row["venue"],
+                "market_id": row["market_id"],
+                "outcome_id": row["outcome_id"],
+                "best_bid": f"{float(row['best_bid']):.6f}",
+                "best_ask": f"{float(row['best_ask']):.6f}",
+                "bid_depth": f"{float(row['bid_depth']):.6f}",
+                "ask_depth": f"{float(row['ask_depth']):.6f}",
+                "exchange_timestamp": row["exchange_timestamp"],
+                "received_timestamp": row["received_timestamp"],
+                "quote_age_seconds": float(row["quote_age_seconds"]),
+                "valid": int(row["valid"])
+            } for row in items]
+        elif target_table == "spread_observations":
+            return [{
+                "observation_id": row["observation_id"],
+                "pair_id": row["pair_id"],
+                "canonical_event": row["canonical_event"],
+                "canonical_outcome": row["canonical_outcome"],
+                "equivalence_mapping": row["equivalence_mapping"],
+                "observed_at": row["observed_at"],
+                "poly_best_bid": f"{float(row['poly_best_bid']):.6f}",
+                "poly_best_ask": f"{float(row['poly_best_ask']):.6f}",
+                "kalshi_best_bid": f"{float(row['kalshi_best_bid']):.6f}",
+                "kalshi_best_ask": f"{float(row['kalshi_best_ask']):.6f}",
+                "poly_ask_depth": f"{float(row['poly_ask_depth']):.6f}",
+                "kalshi_bid_depth": f"{float(row['kalshi_bid_depth']):.6f}",
+                "gross_spread": f"{float(row['gross_spread']):.6f}",
+                "gross_spread_bps": f"{float(row['gross_spread_bps']):.2f}",
+                "net_spread": f"{float(row['net_spread']):.6f}",
+                "net_spread_bps": f"{float(row['net_spread_bps']):.2f}",
+                "poly_fee": f"{float(row['poly_fee']):.6f}",
+                "kalshi_fee": f"{float(row['kalshi_fee']):.6f}",
+                "slippage_cost": f"{float(row['slippage_cost']):.6f}",
+                "executable_qty": f"{float(row['executable_qty']):.6f}",
+                "opportunity_type": row["opportunity_type"],
+                "status": row["status"],
+                "quote_age_poly": float(row["quote_age_poly"]),
+                "quote_age_kalshi": float(row["quote_age_kalshi"]),
+                "venue_delta_seconds": float(row["venue_delta_seconds"])
+            } for row in items]
+        elif target_table == "arbitrage_opportunities":
+            return [{
+                "opportunity_id": row["opportunity_id"],
+                "pair_id": row["pair_id"],
+                "opportunity_type": row["opportunity_type"],
+                "buy_venue": row["buy_venue"],
+                "sell_venue": row["sell_venue"],
+                "canonical_event": row["canonical_event"],
+                "canonical_outcome": row["canonical_outcome"],
+                "status": row["status"],
+                "gross_spread": f"{float(row['gross_spread']):.6f}",
+                "gross_spread_bps": f"{float(row['gross_spread_bps']):.2f}",
+                "net_spread": f"{float(row['net_spread']):.6f}",
+                "net_spread_bps": f"{float(row['net_spread_bps']):.2f}",
+                "available_qty": f"{float(row['available_qty']):.6f}",
+                "vwap_entry": f"{float(row['vwap_entry']):.6f}",
+                "vwap_exit": f"{float(row['vwap_exit']):.6f}",
+                "fee_version": row["fee_version"],
+                "poly_fee": f"{float(row['poly_fee']):.6f}",
+                "kalshi_fee": f"{float(row['kalshi_fee']):.6f}",
+                "slippage_bps": f"{float(row['slippage_bps']):.2f}",
+                "first_observed_at": row["first_observed_at"],
+                "last_observed_at": row["last_observed_at"],
+                "duration_seconds": float(row["duration_seconds"]),
+                "observation_count": int(row["observation_count"])
+            } for row in items]
+        elif target_table == "fee_schedule_versions":
+            return [{
+                "version": row["version"],
+                "effective_date": row["effective_date"],
+                "source": row["source"],
+                "polymarket_maker_bps": f"{float(row['polymarket_maker_bps']):.4f}",
+                "polymarket_taker_bps": f"{float(row['polymarket_taker_bps']):.4f}",
+                "polymarket_settlement_fee_pct": f"{float(row['polymarket_settlement_fee_pct']):.4f}",
+                "kalshi_maker_bps": f"{float(row['kalshi_maker_bps']):.4f}",
+                "kalshi_taker_formula": row["kalshi_taker_formula"],
+                "kalshi_max_taker_fee": f"{float(row['kalshi_max_taker_fee']):.4f}",
+                "kalshi_min_fee": f"{float(row['kalshi_min_fee']):.6f}",
+                "default_slippage_bps": f"{float(row['default_slippage_bps']):.4f}",
+                "notes": row["notes"],
+                "created_at": row["created_at"]
+            } for row in items]
         raise ValueError(f"Unknown target table: {target_table}")
 
     def create_export_batch(self, target_table: str, limit: int = 250):
@@ -514,6 +781,16 @@ class DurableJournal(Journal):
                 item_ids = [str(r["trade_id"]) for r in items]
             elif target_table == "trade_markouts":
                 item_ids = [str(r.get("markout_key") or f"{r['trade_id']}:{r['horizon_seconds']}:{r['calc_version']}") for r in items]
+            elif target_table == "contract_pair_reviews":
+                item_ids = [str(r["review_id"]) for r in items]
+            elif target_table == "cross_venue_quotes":
+                item_ids = [str(r["quote_id"]) for r in items]
+            elif target_table == "spread_observations":
+                item_ids = [str(r["observation_id"]) for r in items]
+            elif target_table == "arbitrage_opportunities":
+                item_ids = [str(r["opportunity_id"]) for r in items]
+            elif target_table == "fee_schedule_versions":
+                item_ids = [str(r["version"]) for r in items]
             else:
                 item_ids = [str(r["event_id"] if "event_id" in r else r["id"]) for r in items]
             created_at = now_utc()
@@ -1187,6 +1464,169 @@ class DurableJournal(Journal):
         rankings.sort(key=lambda r: (1 if r["qualified"] else 0, r["avg_markout_bps"] if r["avg_markout_bps"] is not None else -999999.0), reverse=True)
         return rankings[:limit]
 
+    def record_spread_observation(self, obs: Dict[str, Any]) -> str:
+        """Records an instantaneous cross-venue spread observation for export to ClickHouse."""
+        obs_id = obs.get("observation_id") or str(uuid.uuid4())
+        observed_at = obs.get("observed_at") or now_utc()
+        self.db.execute("""
+            INSERT OR REPLACE INTO spread_observations (
+                observation_id, pair_id, canonical_event, canonical_outcome,
+                equivalence_mapping, observed_at, poly_best_bid, poly_best_ask,
+                kalshi_best_bid, kalshi_best_ask, poly_ask_depth, kalshi_bid_depth,
+                gross_spread, gross_spread_bps, net_spread, net_spread_bps,
+                poly_fee, kalshi_fee, slippage_cost, executable_qty,
+                opportunity_type, status, quote_age_poly, quote_age_kalshi,
+                venue_delta_seconds, exported
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        """, (
+            obs_id, obs["pair_id"], obs.get("canonical_event", ""), obs.get("canonical_outcome", ""),
+            obs.get("equivalence_mapping", "direct"), observed_at,
+            float(obs.get("poly_best_bid", 0.0)), float(obs.get("poly_best_ask", 0.0)),
+            float(obs.get("kalshi_best_bid", 0.0)), float(obs.get("kalshi_best_ask", 0.0)),
+            float(obs.get("poly_ask_depth", 0.0)), float(obs.get("kalshi_bid_depth", 0.0)),
+            float(obs.get("gross_spread", 0.0)), float(obs.get("gross_spread_bps", 0.0)),
+            float(obs.get("net_spread", 0.0)), float(obs.get("net_spread_bps", 0.0)),
+            float(obs.get("poly_fee", 0.0)), float(obs.get("kalshi_fee", 0.0)),
+            float(obs.get("slippage_cost", 0.0)), float(obs.get("executable_qty", 0.0)),
+            obs.get("opportunity_type", "none"), obs.get("status", "candidate"),
+            float(obs.get("quote_age_poly", 0.0)), float(obs.get("quote_age_kalshi", 0.0)),
+            float(obs.get("venue_delta_seconds", 0.0))
+        ))
+        self.db.commit()
+        return obs_id
+
+    def record_arbitrage_opportunity(self, opp: Dict[str, Any]) -> str:
+        """Records an opportunity state machine observation or update."""
+        opp_id = opp.get("opportunity_id") or str(uuid.uuid4())
+        first_obs = opp.get("first_observed_at") or now_utc()
+        last_obs = opp.get("last_observed_at") or first_obs
+        self.db.execute("""
+            INSERT OR REPLACE INTO arbitrage_opportunities (
+                opportunity_id, pair_id, opportunity_type, buy_venue, sell_venue,
+                canonical_event, canonical_outcome, status,
+                gross_spread, gross_spread_bps, net_spread, net_spread_bps,
+                available_qty, vwap_entry, vwap_exit, fee_version,
+                poly_fee, kalshi_fee, slippage_bps,
+                first_observed_at, last_observed_at, duration_seconds,
+                observation_count, exported
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        """, (
+            opp_id, opp["pair_id"], opp.get("opportunity_type", "none"),
+            opp.get("buy_venue", "polymarket"), opp.get("sell_venue", "kalshi"),
+            opp.get("canonical_event", ""), opp.get("canonical_outcome", ""),
+            opp.get("status", "candidate"),
+            float(opp.get("gross_spread", 0.0)), float(opp.get("gross_spread_bps", 0.0)),
+            float(opp.get("net_spread", 0.0)), float(opp.get("net_spread_bps", 0.0)),
+            float(opp.get("available_qty", 0.0)),
+            float(opp.get("vwap_entry", 0.0)), float(opp.get("vwap_exit", 0.0)),
+            opp.get("fee_version", "v2026.1"),
+            float(opp.get("poly_fee", 0.0)), float(opp.get("kalshi_fee", 0.0)),
+            float(opp.get("slippage_bps", 10.0)),
+            first_obs, last_obs,
+            float(opp.get("duration_seconds", 0.0)),
+            int(opp.get("observation_count", 1))
+        ))
+        self.db.commit()
+        return opp_id
+
+    def record_cross_venue_quote(self, quote: Dict[str, Any]) -> str:
+        """Records a normalized top-of-book quote observation."""
+        q_id = quote.get("quote_id") or str(uuid.uuid4())
+        rec_ts = quote.get("received_timestamp") or now_utc()
+        self.db.execute("""
+            INSERT OR REPLACE INTO cross_venue_quotes (
+                quote_id, pair_id, venue, market_id, outcome_id,
+                best_bid, best_ask, bid_depth, ask_depth,
+                exchange_timestamp, received_timestamp, quote_age_seconds,
+                valid, exported
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        """, (
+            q_id, quote["pair_id"], quote["venue"], quote["market_id"], quote.get("outcome_id", "YES"),
+            float(quote.get("best_bid", 0.0)), float(quote.get("best_ask", 0.0)),
+            float(quote.get("bid_depth", 0.0)), float(quote.get("ask_depth", 0.0)),
+            quote.get("exchange_timestamp"), rec_ts,
+            float(quote.get("quote_age_seconds", 0.0)),
+            int(quote.get("valid", 1))
+        ))
+        self.db.commit()
+        return q_id
+
+    def record_contract_pair_review(self, review: Dict[str, Any]) -> str:
+        """Records an operator review entry for ClickHouse export."""
+        rev_id = review.get("review_id") or str(uuid.uuid4())
+        reviewed_at = review.get("reviewed_at") or now_utc()
+        self.db.execute("""
+            INSERT OR REPLACE INTO contract_pair_reviews (
+                review_id, pair_id, polymarket_asset_id, kalshi_ticker,
+                canonical_event, canonical_outcome, equivalence_mapping,
+                resolution_source, resolution_criteria, polymarket_expiration,
+                kalshi_expiration, settlement_details, verification_status,
+                reviewer, reviewed_at, exported
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        """, (
+            rev_id, review["pair_id"], review["polymarket_asset_id"], review["kalshi_ticker"],
+            review.get("canonical_event", ""), review.get("canonical_outcome", ""),
+            review.get("equivalence_mapping", "direct"), review.get("resolution_source", ""),
+            review.get("resolution_criteria", ""), review.get("polymarket_expiration"),
+            review.get("kalshi_expiration"), review.get("settlement_details", ""),
+            review.get("verification_status", "unverified"), review.get("reviewer", "operator"),
+            reviewed_at
+        ))
+        self.db.commit()
+        return rev_id
+
+    def record_fee_schedule_version(self, fee: Dict[str, Any]) -> str:
+        """Records a fee schedule version for ClickHouse export."""
+        ver = fee["version"]
+        created_at = fee.get("created_at") or now_utc()
+        self.db.execute("""
+            INSERT OR REPLACE INTO fee_schedule_versions (
+                version, effective_date, source, polymarket_maker_bps,
+                polymarket_taker_bps, polymarket_settlement_fee_pct,
+                kalshi_maker_bps, kalshi_taker_formula, kalshi_max_taker_fee,
+                kalshi_min_fee, default_slippage_bps, notes, created_at, exported
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        """, (
+            ver, fee.get("effective_date", created_at), fee.get("source", ""),
+            float(fee.get("polymarket_maker_bps", 0.0)), float(fee.get("polymarket_taker_bps", 0.0)),
+            float(fee.get("polymarket_settlement_fee_pct", 0.0)), float(fee.get("kalshi_maker_bps", 0.0)),
+            fee.get("kalshi_taker_formula", ""), float(fee.get("kalshi_max_taker_fee", 0.02)),
+            float(fee.get("kalshi_min_fee", 0.0001)), float(fee.get("default_slippage_bps", 10.0)),
+            fee.get("notes", ""), created_at
+        ))
+        self.db.commit()
+        return ver
+
+    def get_spread_observations(self, pair_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        if pair_id:
+            rows = self.db.execute(
+                "SELECT * FROM spread_observations WHERE pair_id = ? ORDER BY observed_at DESC LIMIT ?",
+                (pair_id, limit)
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                "SELECT * FROM spread_observations ORDER BY observed_at DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_arbitrage_opportunities(self, pair_id: Optional[str] = None, status: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        filters = []
+        params = []
+        if pair_id:
+            filters.append("pair_id = ?")
+            params.append(pair_id)
+        if status:
+            filters.append("status = ?")
+            params.append(status)
+        where_clause = " WHERE " + " AND ".join(filters) if filters else ""
+        params.append(limit)
+        rows = self.db.execute(
+            f"SELECT * FROM arbitrage_opportunities{where_clause} ORDER BY last_observed_at DESC LIMIT ?",
+            params
+        ).fetchall()
+        return [dict(r) for r in rows]
+
 
 def _clickhouse_rows(table, batch):
     if table == "events":
@@ -1212,7 +1652,12 @@ def _clickhouse_rows(table, batch):
     return [{key: value for key,value in row.items() if key != "exported"} for row in batch]
 
 
-TARGET_TABLES = ("market_events", "trades", "orderbook_snapshots", "wallet_trades", "trade_markouts", "feed_health", "ingestion_errors")
+TARGET_TABLES = (
+    "market_events", "trades", "orderbook_snapshots", "wallet_trades",
+    "trade_markouts", "contract_pair_reviews", "cross_venue_quotes",
+    "spread_observations", "arbitrage_opportunities", "fee_schedule_versions",
+    "feed_health", "ingestion_errors"
+)
 
 
 async def export_live_forever(journal, url, status, client=None, sleep=asyncio.sleep):
