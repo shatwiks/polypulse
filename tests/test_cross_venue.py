@@ -508,6 +508,54 @@ class TestCrossVenueIntelligence(unittest.TestCase):
         # Slippage cost is separated
         self.assertGreater(cost_eval["total_slippage_cost"], 0.0)
 
+    def test_fee_schedule_v2026_2_series_multipliers_and_cftc_rounding(self):
+        """Verifies v2026.2 series multipliers and official CFTC ceil-cent rounding rules."""
+        # 1. Standard Rates Series (0.07 multiplier, ceil to whole cents)
+        # 80 contracts @ P=0.58: 80 * 0.07 * 0.58 * 0.42 = 1.36416 -> ceil(136.416) = 137 cents = $1.37
+        fee_fed = calculate_venue_taker_fee("kalshi", 0.58, 80.0, version="v2026.2", kalshi_ticker="FED-27DEC")
+        self.assertEqual(fee_fed["total_fee"], 1.37)
+        self.assertEqual(fee_fed["multiplier"], 0.07)
+        self.assertEqual(fee_fed["rounding"], "ceil_whole_cents")
+
+        # 2. Index Series (0.035 multiplier, ceil to whole cents)
+        # 80 contracts @ P=0.58: 80 * 0.035 * 0.58 * 0.42 = 0.68208 -> ceil(68.208) = 69 cents = $0.69
+        fee_index = calculate_venue_taker_fee("kalshi", 0.58, 80.0, version="v2026.2", kalshi_ticker="INDEX-SPX-27")
+        self.assertEqual(fee_index["total_fee"], 0.69)
+        self.assertEqual(fee_index["multiplier"], 0.035)
+
+        # 3. Cap enforcement: $0.02 per contract cap
+        # At P=0.50 (max variance 0.25): 80 * 0.07 * 0.25 = 1.40 (< 1.60 cap)
+        fee_p50 = calculate_venue_taker_fee("kalshi", 0.50, 80.0, version="v2026.2", kalshi_ticker="INTRATE-27")
+        self.assertEqual(fee_p50["total_fee"], 1.40)
+
+    def test_polymarket_dynamic_taker_fee(self):
+        """Verifies Polymarket market-specific dynamic taker fees override default 0.0 bps."""
+        # Baseline standard market: 0 bps
+        fee_base = calculate_venue_taker_fee("polymarket", 0.50, 100.0)
+        self.assertEqual(fee_base["total_fee"], 0.0)
+
+        # Dynamic market with 25 bps taker fee: 100 * 0.50 * 0.0025 = $0.125
+        fee_dyn = calculate_venue_taker_fee("polymarket", 0.50, 100.0, poly_taker_bps=25.0)
+        self.assertEqual(fee_dyn["total_fee"], 0.125)
+
+    def test_expired_contract_revalidation_against_current_time(self):
+        """Verifies that contracts expiring before November 5, 2026 are rejected as expired."""
+        now_nov_2026 = datetime(2026, 11, 5, 12, 0, 0, tzinfo=timezone.utc)
+        historical_pair = {
+            "polymarket_asset_id": "32338220190071351435772801779725302244575775216413325951443816017994629993401",
+            "kalshi_ticker": "FED-26MAR-T0.25",
+            "canonical_event": "Historical Fed Decision",
+            "canonical_outcome": "Rate Cut",
+            "equivalence_mapping": "direct",
+            "resolution_source": "FOMC H.15",
+            "resolution_criteria": "Settles on official statement",
+            "expiration": "2026-03-25T18:00:00Z",
+            "verification_status": "verified"
+        }
+        valid, reason = validate_contract_compatibility(historical_pair, now_dt=now_nov_2026)
+        self.assertFalse(valid)
+        self.assertIn("expired", reason.lower())
+
     def test_opportunity_state_machine_transitions(self):
         """Verifies candidate vs executable vs stale vs insufficient_liquidity states."""
         pair = {

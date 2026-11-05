@@ -1,4 +1,5 @@
 """ClickHouse Historical Analytics client and query service."""
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -25,8 +26,35 @@ def parse_window(window_str: str) -> timedelta:
 
 class ClickHouseAnalytics:
     def __init__(self, url: str):
-        self.url = url
-        self.enabled = bool(url)
+        # Normalize localhost to 127.0.0.1 to avoid Windows IPv6 resolution latency (1s timeout)
+        if url:
+            self.url = url.replace("://localhost:", "://127.0.0.1:").replace("@localhost:", "@127.0.0.1:")
+        else:
+            self.url = ""
+        self.enabled = bool(self.url)
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if self._client is not None:
+            if self._client.is_closed or getattr(self._client, "_loop_id", None) != id(current_loop):
+                self._client = None
+
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=10.0,
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=50)
+            )
+            self._client._loop_id = id(current_loop)
+        return self._client
+
+    async def aclose(self):
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
 
     async def execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         if not self.enabled:
@@ -36,20 +64,21 @@ class ClickHouseAnalytics:
             for k, v in params.items():
                 request_params[f"param_{k}"] = str(v)
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                resp = await client.post(self.url, params=request_params)
-                resp.raise_for_status()
-                text = resp.text.strip()
-                if not text:
-                    return []
-                return [json.loads(line) for line in text.split("\n") if line.strip()]
-            except httpx.HTTPStatusError as exc:
-                LOG.warning("ClickHouse query error: %s - %s (query=%s)", exc.response.status_code, exc.response.text, query[:150])
+        client = self._get_client()
+        try:
+            resp = await client.post(self.url, params=request_params)
+            resp.raise_for_status()
+            text = resp.text.strip()
+            if not text:
                 return []
-            except (httpx.HTTPError, OSError) as exc:
-                LOG.warning("ClickHouse query error: %s (query=%s)", type(exc).__name__, query[:100])
-                return []
+            return [json.loads(line) for line in text.split("\n") if line.strip()]
+        except httpx.HTTPStatusError as exc:
+            LOG.warning("ClickHouse query error: %s - %s (query=%s)", exc.response.status_code, exc.response.text, query[:150])
+            return []
+        except (RuntimeError, httpx.HTTPError, OSError) as exc:
+            self._client = None
+            LOG.warning("ClickHouse query error: %s (query=%s)", type(exc).__name__, query[:100])
+            return []
 
     async def get_market_summary(self, market_id: str, venue: Optional[str] = None, window: str = "24h") -> Dict[str, Any]:
         """Calculates 24h volume, VWAP, trade count, high/low/close, and current quote over deduplicated trades."""
@@ -144,7 +173,7 @@ class ClickHouseAnalytics:
         if not start_time:
             start_time = datetime.now(timezone.utc) - timedelta(hours=24)
         if not end_time:
-            end_time = datetime.now(timezone.utc)
+            end_time = datetime.now(timezone.utc) + timedelta(minutes=5)
 
         params = {
             "market": market_id,
@@ -265,7 +294,7 @@ class ClickHouseAnalytics:
         if not start_time:
             start_time = datetime.now(timezone.utc) - timedelta(hours=24)
         if not end_time:
-            end_time = datetime.now(timezone.utc)
+            end_time = datetime.now(timezone.utc) + timedelta(minutes=5)
 
         params = {
             "market": market_id,

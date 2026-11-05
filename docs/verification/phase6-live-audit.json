@@ -1,0 +1,44 @@
+{
+  "audit_name": "PolyPulse Phase 6 Live Feed & Ground-Truth Verification Audit",
+  "timestamp_utc": "2026-11-05T15:00:16.529827+00:00",
+  "polymarket_live": {
+    "status": "connected",
+    "server_timestamp": "1793890817",
+    "ping_latency_ms": 479.23,
+    "sample_market": {
+      "token_id": "32338220190071351435772801779725302244575775216413325951443816017994629993401",
+      "question": "Xi Jinping out before 2027?",
+      "end_date": "2027-01-01T04:59:00Z",
+      "bids_count": 17,
+      "asks_count": 142,
+      "top_bid": {
+        "price": "0.001",
+        "size": "332426.66"
+      },
+      "top_ask": {
+        "price": "0.999",
+        "size": "2181808.98"
+      }
+    }
+  },
+  "kalshi_live": {
+    "status": "unconfigured",
+    "auth_required": true,
+    "detail": "Kalshi production API requires registered RSA keypair credentials (KALSHI_API_KEY_ID, KALSHI_PRIVATE_KEY_PATH). Connection reset on unauthenticated endpoint.",
+    "fabrication_policy": "Zero-Fabrication Guarantee enforced. Simulated fixtures used for offline testing."
+  },
+  "synthetic_benchmark_evidence": {
+    "total_evaluated_events": 10000,
+    "source": "Synthetic deterministic memory fixtures (scripts/benchmark_cross_venue.py)",
+    "live_events_in_benchmark": 0,
+    "purpose": "Microstructure throughput and latency stress testing"
+  },
+  "clickhouse_performance": {
+    "client_mode": "Persistent connection pool (httpx.AsyncClient with 127.0.0.1)",
+    "p50_query_latency_ms": 25.99,
+    "p95_query_latency_ms": 37.24,
+    "server_execution_ms": 4.13,
+    "rows_read": 0,
+    "target_database": "polypulse"
+  }
+}

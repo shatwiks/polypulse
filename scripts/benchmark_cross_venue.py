@@ -120,7 +120,7 @@ def benchmark_scanner_pair_evaluation(iterations=50_000):
 
 
 async def benchmark_clickhouse_queries():
-    ch_url = os.getenv("CLICKHOUSE_URL") or "http://polypulse:7CC8CA94DAFA6F05466B7DAE01F73EFC@localhost:8123"
+    ch_url = os.getenv("CLICKHOUSE_URL") or "http://polypulse:7CC8CA94DAFA6F05466B7DAE01F73EFC@127.0.0.1:8123"
     analytics = ClickHouseAnalytics(ch_url)
 
     latencies = {}
@@ -131,13 +131,27 @@ async def benchmark_clickhouse_queries():
         ("venue_comparison", lambda: analytics.get_venue_comparison_analytics()),
         ("quote_freshness", lambda: analytics.get_quote_freshness_stats())
     ]
+    # Warmup connection
+    try:
+        await analytics.get_top_spread_pairs(limit=1, min_observations=1)
+    except Exception:
+        pass
+
     for query_name, call_coro in queries:
         times = []
-        for _ in range(5):
+        for _ in range(10):
             t0 = time.perf_counter()
             await call_coro()
             times.append((time.perf_counter() - t0) * 1000.0)
-        latencies[query_name] = statistics.mean(times)
+        times.sort()
+        p50 = statistics.median(times)
+        p95 = times[int(0.95 * len(times))]
+        latencies[query_name] = {
+            "p50": round(p50, 2),
+            "p95": round(p95, 2),
+            "mean": round(statistics.mean(times), 2)
+        }
+    await analytics.aclose()
     return latencies
 
 
@@ -168,14 +182,16 @@ def main():
 
     # 5. ClickHouse Queries
     print("-" * 78)
-    print(" ClickHouse Historical Cross-Venue Analytics Latency:")
+    print(" ClickHouse Historical Cross-Venue Analytics Latency (Repeated Measurements):")
     try:
         ch_times = asyncio.run(benchmark_clickhouse_queries())
-        for q, ms in ch_times.items():
-            print(f"    - {q:<26}: {ms:6.2f} ms")
+        for q, stats in ch_times.items():
+            print(f"    - {q:<24}: p50={stats['p50']:5.2f} ms | p95={stats['p95']:5.2f} ms | mean={stats['mean']:5.2f} ms")
     except Exception as exc:
         print(f"    - ClickHouse queries skipped ({exc})")
 
+    print("-" * 78)
+    print(" NOTE: Microbenchmarks 1-4 evaluate synthetic memory fixtures for algorithmic throughput.")
     print("=" * 78)
 
 

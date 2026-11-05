@@ -241,12 +241,16 @@ def compute_cross_venue_spread(
             sell_venue=sell_v,
             buy_price=buy_p,
             sell_price=sell_p,
-            quantity=max(1.0, executable_qty)
+            quantity=max(1.0, executable_qty),
+            kalshi_ticker=pair.get("kalshi_ticker"),
+            poly_taker_bps=pair.get("polymarket_taker_bps")
         )
         net_spread = cost_eval["net_spread"]
         best_spread_bps = cost_eval["gross_spread_bps"]
         poly_fee = cost_eval["buy_venue_fee"] if buy_v == "polymarket" else cost_eval["sell_venue_fee"]
         kalshi_fee = cost_eval["buy_venue_fee"] if buy_v == "kalshi" else cost_eval["sell_venue_fee"]
+        strategy_category = "direct_spread"
+        inventory_requirement = "Requires pre-existing contract inventory or 100% collateral to sell short leg"
 
         # VWAP calculations across requested sizes
         for sz in requested_sizes:
@@ -296,8 +300,12 @@ def compute_cross_venue_spread(
                 buy_price=poly_ask,
                 sell_price=kalshi_ask,
                 quantity=max(1.0, executable_qty),
-                is_inverse_mint=True
+                is_inverse_long_both=True,
+                kalshi_ticker=pair.get("kalshi_ticker"),
+                poly_taker_bps=pair.get("polymarket_taker_bps")
             )
+            strategy_category = "complementary_payoff_parity"
+            inventory_requirement = "Long both outcomes: cash capital only (no short inventory required)"
         else:
             best_spread = merge_spread
             opportunity_type = "merge_both_short" if merge_spread > 0 else "none"
@@ -308,8 +316,12 @@ def compute_cross_venue_spread(
                 buy_price=poly_bid,
                 sell_price=kalshi_bid,
                 quantity=max(1.0, executable_qty),
-                is_inverse_merge=True
+                is_inverse_short_both=True,
+                kalshi_ticker=pair.get("kalshi_ticker"),
+                poly_taker_bps=pair.get("polymarket_taker_bps")
             )
+            strategy_category = "complementary_payoff_parity"
+            inventory_requirement = "Short both outcomes: requires pre-existing inventory on both venues or 100% cash collateral"
 
         net_spread = cost_eval["net_spread"]
         best_spread_bps = cost_eval["gross_spread_bps"]
@@ -318,7 +330,7 @@ def compute_cross_venue_spread(
 
         # VWAP calculations for inverse mapping
         for sz in requested_sizes:
-            if opportunity_type == "mint_both_long":
+            if opportunity_type in ("synthetic_long_both", "mint_both_long"):
                 p_ask_v, p_filled = compute_ladder_vwap(poly_asks, sz)
                 k_ask_v, k_filled = compute_ladder_vwap(kalshi_asks, sz)
                 if p_ask_v is not None and k_ask_v is not None:
@@ -331,7 +343,7 @@ def compute_cross_venue_spread(
                     }
                 else:
                     size_vwap_results[str(int(sz))] = {"fillable": False, "max_available": min(p_filled, k_filled)}
-            elif opportunity_type == "merge_both_short":
+            elif opportunity_type in ("synthetic_short_both", "merge_both_short"):
                 p_bid_v, p_filled = compute_ladder_vwap(poly_bids, sz)
                 k_bid_v, k_filled = compute_ladder_vwap(kalshi_bids, sz)
                 if p_bid_v is not None and k_bid_v is not None:
@@ -370,6 +382,8 @@ def compute_cross_venue_spread(
         "canonical_event": canonical_event,
         "canonical_outcome": canonical_outcome,
         "equivalence_mapping": mapping,
+        "strategy_category": strategy_category,
+        "inventory_requirement": inventory_requirement,
         "resolution_source": pair.get("resolution_source", ""),
         "resolution_criteria": pair.get("resolution_criteria", ""),
         "settlement_details": pair.get("settlement_details", ""),
@@ -396,5 +410,5 @@ def compute_cross_venue_spread(
             "venue_delta": round(venue_delta_s, 2),
         },
         "vwap_by_size": size_vwap_results,
-        "note": "Gross quote difference before fees, depth and settlement risk"
+        "note": "Theoretical gross quote difference. Net spread accounts for fees and slippage buffer. Subject to execution, legging, and oracle divergence risk."
     }

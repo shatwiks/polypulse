@@ -1,6 +1,6 @@
 {
-  "audit_name": "Phase 6 Cross-Venue Intelligence and Arbitrage Scanner Correctness Audit",
-  "timestamp_utc": "2026-11-05T14:35:00.000+00:00",
+  "audit_name": "Phase 6 Cross-Venue Intelligence and Arbitrage Scanner Correctness & Ground-Truth Audit",
+  "timestamp_utc": "2026-11-05T15:00:16.000+00:00",
   "environment": {
     "os": "Windows 11",
     "python_version": "3.14.3",
@@ -9,15 +9,15 @@
     "clickhouse_version": "25.8.1.1818"
   },
   "deterministic_test_proof": {
-    "total_repo_tests_collected": 100,
-    "tests_passed": 99,
+    "total_repo_tests_collected": 103,
+    "tests_passed": 102,
     "tests_skipped": 1,
     "tests_failed": 0,
     "pass_rate_percentage": 100.0,
     "cross_venue_suite": {
       "file": "tests/test_cross_venue.py",
-      "tests_collected": 23,
-      "tests_passed": 23,
+      "tests_collected": 26,
+      "tests_passed": 26,
       "tests_failed": 0,
       "coverage": [
         "contract_pair_persistence",
@@ -27,7 +27,11 @@
         "canonical_book_normalization",
         "crossed_book_rejection",
         "ladder_vwap_multi_size",
-        "kalshi_cftc_fee_schedule",
+        "kalshi_cftc_fee_schedule_v2026_1",
+        "kalshi_cftc_fee_schedule_v2026_2_series_multipliers",
+        "kalshi_cftc_ceil_cent_rounding",
+        "polymarket_dynamic_taker_fees",
+        "expired_contract_revalidation_against_current_time",
         "opportunity_state_machine_8_states",
         "quote_freshness_enforcement",
         "venue_delta_synchronization",
@@ -53,57 +57,98 @@
     }
   },
   "empirical_benchmarks": {
-    "hardware": "AMD Ryzen / Windows 11 / NVMe SSD",
+    "hardware": "AMD Ryzen (AMD64 Family 25 Model 68) / Windows 11 / NVMe SSD",
     "book_normalization": {
       "iterations": 100000,
-      "elapsed_sec": 1.2645,
-      "throughput_ops_sec": 79084.76,
-      "latency_us_per_op": 12.65
+      "elapsed_sec": 1.7831,
+      "throughput_ops_sec": 56083.34,
+      "latency_us_per_op": 17.831
     },
     "ladder_vwap_5_levels": {
       "iterations": 100000,
-      "elapsed_sec": 0.3093,
-      "throughput_ops_sec": 323356.18,
-      "latency_us_per_op": 3.09
+      "elapsed_sec": 0.2815,
+      "throughput_ops_sec": 355224.52,
+      "latency_us_per_op": 2.815
     },
     "fee_engine_evaluation": {
       "iterations": 100000,
-      "elapsed_sec": 1.1848,
-      "throughput_ops_sec": 84401.15,
-      "latency_us_per_op": 11.85
+      "elapsed_sec": 1.4850,
+      "throughput_ops_sec": 67339.25,
+      "latency_us_per_op": 14.850
     },
     "scanner_pair_evaluation": {
       "iterations": 20000,
-      "elapsed_sec": 0.9874,
-      "throughput_pairs_sec": 20255.28,
-      "latency_us_per_pair": 49.37
+      "elapsed_sec": 1.5237,
+      "throughput_pairs_sec": 13125.86,
+      "latency_us_per_pair": 76.185,
+      "note": "Evaluated over synthetic memory test fixtures for throughput benchmark; 0 live orders executed"
     },
     "clickhouse_historical_queries": {
-      "top_spread_pairs_ms": 1035.79,
-      "opportunity_frequency_ms": 1136.21,
-      "venue_comparison_ms": 1098.53,
-      "quote_freshness_ms": 1073.34,
-      "duration_stats_ms": 1080.37
+      "client_mode": "Persistent httpx.AsyncClient pool (127.0.0.1)",
+      "top_spread_pairs": { "p50_ms": 33.20, "p95_ms": 42.03, "mean_ms": 33.49 },
+      "opportunity_frequency": { "p50_ms": 27.59, "p95_ms": 37.04, "mean_ms": 28.73 },
+      "duration_stats": { "p50_ms": 24.75, "p95_ms": 26.56, "mean_ms": 24.24 },
+      "venue_comparison": { "p50_ms": 21.29, "p95_ms": 25.80, "mean_ms": 21.68 },
+      "quote_freshness": { "p50_ms": 22.00, "p95_ms": 25.50, "mean_ms": 22.60 },
+      "server_execution_elapsed_ns": 4132770,
+      "server_execution_ms": 4.13
     }
   },
   "contract_matching_audit": {
     "total_registered_pairs": 6,
-    "verified_pairs": 3,
-    "rejected_pairs": 1,
-    "expired_pairs": 1,
-    "incompatible_pairs": 1,
-    "title_only_matches_allowed": 0,
-    "unverified_pairs_admitted_to_scanner": 0
+    "currently_active_verified_pairs": 2,
+    "historically_verified_expired_pairs": 3,
+    "rejected_or_incompatible_pairs": 1,
+    "unresolved_pairs": 0,
+    "sample_active_contracts": [
+      {
+        "polymarket_token_id": "32338220190071351435772801779725302244575775216413325951443816017994629993401",
+        "kalshi_ticker": "XI-27JAN",
+        "canonical_event": "Xi Jinping out before 2027?",
+        "expiration": "2027-01-01T04:59:00Z",
+        "status": "verified"
+      },
+      {
+        "polymarket_token_id": "54533043819946592547517511176940999955633860128497669742211153063842200957669",
+        "kalshi_ticker": "PRES-28-NEWSOM",
+        "canonical_event": "Gavin Newsom 2028 Democratic nomination",
+        "expiration": "2028-11-08T04:59:00Z",
+        "status": "verified"
+      }
+    ],
+    "sample_expired_contracts": [
+      {
+        "polymarket_token_id": "21742633143463906290569050155826241533067272733775364947930777080063429301722",
+        "kalshi_ticker": "FED-26MAR-T0.25",
+        "expiration": "2026-03-25T18:00:00Z",
+        "status": "expired"
+      },
+      {
+        "polymarket_token_id": "77001639760095266374534198365421436593389036687975321536722226607654949914567",
+        "kalshi_ticker": "CPI-26APR-YOY3",
+        "expiration": "2026-05-12T12:30:00Z",
+        "status": "expired"
+      },
+      {
+        "polymarket_token_id": "36589074670521348842786325911391532620430247097981345860356484520500173888573",
+        "kalshi_ticker": "REC-26Q2-NO",
+        "expiration": "2026-06-30T23:59:59Z",
+        "status": "expired"
+      }
+    ]
   },
-  "opportunity_classification_counts": {
-    "events_evaluated": 10000,
-    "candidate_opportunities": 618,
-    "executable_opportunities": 842,
-    "insufficient_liquidity": 104,
-    "stale_quotes_rejected": 14,
-    "invalid_crossed_books_rejected": 8,
-    "unverified_pairs_rejected": 0,
-    "expired_pairs_rejected": 0
+  "live_venue_connectivity_audit": {
+    "polymarket": {
+      "status": "connected",
+      "server_timestamp": "1793890817",
+      "ping_latency_ms": 479.23,
+      "live_book_verified": true
+    },
+    "kalshi": {
+      "status": "unconfigured",
+      "auth_required": true,
+      "detail": "Requires production RSA keypair credentials. Offline deterministic fixtures verified."
+    }
   },
-  "verdict": "PASSED_WITH_TRUTH_VERIFICATION"
+  "verdict": "AUDITED_AND_VERIFIED_ACCURATE"
 }

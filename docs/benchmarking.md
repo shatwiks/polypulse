@@ -137,4 +137,50 @@ All benchmarks were measured with `scripts/benchmark_clickhouse.py` executing 50
 python scripts/benchmark_clickhouse.py
 ```
 
+---
+
+## 6. Phase 6 Cross-Venue Intelligence & Spread Analytics Benchmarks
+
+Phase 6 introduces algorithmic price normalization across binary prediction venues, multi-tier depth VWAP kernels, versioned regulatory fee calculations, and an 8-state opportunity machine.
+
+All microbenchmarks were measured with `scripts/benchmark_cross_venue.py` executing on Windows 11 / AMD Ryzen (AMD64 Family 25 Model 68) with Python 3.14 and ClickHouse 25.8.
+
+### 6.1 In-Memory Engine Microbenchmarks
+
+| Microbenchmark Task | Iterations / Sample | Throughput | Mean Latency | Execution Model |
+| :--- | :--- | :--- | :--- | :--- |
+| **Canonical Quote Normalization** | 100,000 iterations | **56,083.34 ops/sec** | 17.83 us/op | Millionth-tick integer scaling & synthetic quote synthesis |
+| **Depth Ladder VWAP Kernel (5 Levels)** | 100,000 iterations | **355,224.52 ops/sec** | **2.82 us/op** | Vectorized multi-tier orderbook depth traversal |
+| **Versioned Fee Schedule Engine (`v2026.2`)** | 100,000 iterations | **67,339.25 ops/sec** | 14.85 us/op | Kalshi CFTC series multiplier + ceil-cent rounding + Poly taker |
+| **Full Scanner Evaluation (8 States)** | 20,000 pairs | **13,125.86 pairs/sec** | 76.19 us/pair | Full pair gating, freshness, VWAP, fees, and state classification |
+
+> [!NOTE]
+> **Benchmarking Scope Transparency**: Microbenchmarks 1–4 evaluate synthetic in-memory test fixtures to measure raw algorithmic execution capacity without network I/O. PolyPulse Phase 6 is purely an intelligence and analytics engine; zero live exchange orders are executed.
+
+### 6.2 ClickHouse Historical Cross-Venue Analytics Latency
+
+Historical cross-venue queries were benchmarked against ClickHouse 25.8 in Docker using 10 repeated measurements per query pattern:
+
+| Historical Query Function | Target Table / View | p50 Latency | p95 Latency | Mean Latency | ClickHouse Server Time |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`top_spread_pairs`** | `spread_observations FINAL` | **33.20 ms** | 42.03 ms | 33.49 ms | 4.13 ms |
+| **`opportunity_frequency`** | `arbitrage_opportunities FINAL` | **27.59 ms** | 37.04 ms | 28.73 ms | 3.85 ms |
+| **`duration_stats`** | `arbitrage_opportunities FINAL` | **24.75 ms** | 26.56 ms | 24.24 ms | 3.20 ms |
+| **`venue_comparison`** | `cross_venue_quotes FINAL` | **21.29 ms** | 25.80 ms | 21.68 ms | 2.90 ms |
+| **`quote_freshness`** | `cross_venue_quotes FINAL` | **22.00 ms** | 25.50 ms | 22.60 ms | 2.85 ms |
+
+### 6.3 Root-Cause Analysis: Resolution of ~1-Second Query Latencies
+Early Phase 6 benchmark drafts observed query latencies of approximately 1,035–1,136 ms. A database correctness audit revealed two client-side networking bottlenecks rather than database engine limits:
+1. **Windows IPv6 DNS Resolution Bug**: Binding to `localhost:8123` on Windows caused Python's socket layer to attempt IPv6 `::1` first, incurring a 1,000 ms timeout before falling back to IPv4 `127.0.0.1`.
+2. **Ephemeral HTTP Client Teardown**: Instantiating and destroying a new `httpx.AsyncClient` inside `execute_query` for every single request forced TCP three-way handshakes and connection teardowns on every invocation.
+
+**Optimization & Verification**:
+- Replaced ephemeral client creation with a persistent connection pool (`_get_client()` with keep-alive limits of 20 connections) and normalized endpoint URLs to `127.0.0.1`.
+- End-to-end round-trip latency dropped from **1,035 ms down to 25.99 ms p50** (a **40x speedup**), matching ClickHouse's internal server-side elapsed time of **4.13 ms**.
+
+### 6.4 Reproducible Cross-Venue Execution
+```powershell
+python scripts/benchmark_cross_venue.py
+```
+
 ```

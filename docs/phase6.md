@@ -73,36 +73,53 @@ $$\text{Executable Notional} = \text{Executable Qty} \times P_{\text{entry}}$$
 
 ---
 
-### 3.2 Inverse Equivalence Mapping ($Poly_{\text{YES}} \equiv Kalshi_{\text{NO}}$)
+### 3.2 Inverse Equivalence Complementary Payoff Parity ($Poly_{\text{YES}} \equiv Kalshi_{\text{NO}}$)
 
-When outcomes are inverted, buying Poly YES and buying Kalshi YES covers all possible states of the world (one must settle to \$1.00 and the other to \$0.00).
+When outcomes are inverted, holding Poly YES and Kalshi YES covers all possible states of the world (one must settle to \$1.00 and the other to \$0.00).
 
-#### Opportunity 1: Mint Arbitrage (Long Both)
+> [!WARNING]
+> **Synthetic Payoff Parity vs. CTF Minting**:
+> Holding a cross-venue synthetic position across two separate exchanges is NOT on-chain CTF minting or merging. In the Conditional Token Framework, minting refers strictly to depositing USDC collateral directly into the Gnosis CTF exchange contract on Polygon to receive token pairs. Cross-venue payoff parity is a synthetic position subject to inter-venue legal, settlement, and oracle basis risk.
+
+#### Strategy 1: Synthetic Long Both (Complementary Payoff Parity)
 - Buy Polymarket YES at $P^{\text{poly}}_{\text{ask}}$
 - Buy Kalshi YES at $P^{\text{kalshi}}_{\text{ask}}$
-- Combined cost: $\text{Cost}_{\text{mint}} = P^{\text{poly}}_{\text{ask}} + P^{\text{kalshi}}_{\text{ask}}$
-- Guaranteed payout is \$1.00 in all states of the world:
-$$\text{Spread}_{\text{mint}} = 1.00 - (P^{\text{poly}}_{\text{ask}} + P^{\text{kalshi}}_{\text{ask}})$$
-- If $\text{Spread}_{\text{mint}} > 0$, simultaneous purchase locks in riskless gross profit upon event resolution.
+- Combined cost: $\text{Cost} = P^{\text{poly}}_{\text{ask}} + P^{\text{kalshi}}_{\text{ask}}$
+- Settlement payout is \$1.00 in all states of the world:
+$$\text{Spread} = 1.00 - (P^{\text{poly}}_{\text{ask}} + P^{\text{kalshi}}_{\text{ask}})$$
+- **Inventory Requirement**: Cash capital on both venues only (no short inventory required).
 
-#### Opportunity 2: Merge Arbitrage (Short Both)
+#### Strategy 2: Synthetic Short Both (Complementary Short Parity)
 - Sell Polymarket YES at $P^{\text{poly}}_{\text{bid}}$
 - Sell Kalshi YES at $P^{\text{kalshi}}_{\text{bid}}$
-- Combined upfront revenue received: $\text{Revenue}_{\text{merge}} = P^{\text{poly}}_{\text{bid}} + P^{\text{kalshi}}_{\text{bid}}$
+- Combined upfront revenue received: $\text{Revenue} = P^{\text{poly}}_{\text{bid}} + P^{\text{kalshi}}_{\text{bid}}$
 - Maximum combined payout liability is \$1.00:
-$$\text{Spread}_{\text{merge}} = (P^{\text{poly}}_{\text{bid}} + P^{\text{kalshi}}_{\text{bid}}) - 1.00$$
-- If $\text{Spread}_{\text{merge}} > 0$, selling both yields cash proceeds greater than maximum settlement liability.
+$$\text{Spread} = (P^{\text{poly}}_{\text{bid}} + P^{\text{kalshi}}_{\text{bid}}) - 1.00$$
+- **Inventory Requirement**: Requires pre-existing token inventory on both venues or posting 100% collateral ($1.00/contract) to mint complete sets before selling; binary prediction markets do not support naked shorting.
+
+#### Real-World Risk Factors
+No cross-venue opportunity is "riskless" or "guaranteed":
+1. **Legging Risk**: Market prices moving between executing leg 1 and leg 2.
+2. **Partial Fills**: Unhedged directional exposure when one venue fills partially.
+3. **Settlement / Oracle Divergence**: Polymarket settles via decentralized UMA dispute consensus; Kalshi settles via official government reports and CFTC determinations. Divergent resolutions can result in both positions losing or being delayed.
+4. **Capital Lockup**: Full collateral remains locked until contract expiration with zero yield.
 
 ---
 
-### 3.3 Net Spread & Fee Haircut Architecture
+### 3.3 Net Spread & Regulatory Fee Haircut Engine
 
-Gross spreads are adjusted for exchange taker fee schedules:
+Gross spreads are adjusted for regulatory and venue taker fee schedules:
 $$\text{Net Spread} = \text{Gross Spread} - \text{Fee}_{\text{poly}} - \text{Fee}_{\text{kalshi}} - \text{Slippage Buffer}$$
 
-- **Kalshi CFTC Taker Fee**: Non-linear schedule capping at 2 cents per contract:
-  $$\text{Fee}_{\text{kalshi}}(P) = \min(0.07 \times P \times (1 - P), 0.02)$$
-- **Polymarket CLOB Fee**: $0.00$ standard taker fee.
+- **Kalshi Official CFTC Taker Fee (`v2026.2`)**:
+  Calculated per transaction based on series multipliers and rounded up to the nearest whole cent:
+  $$\text{fee\_cents} = \min\left(\lceil \text{multiplier} \times C \times P \times (1 - P) \times 100 \rceil, \text{max\_fee} \times 100 \times C\right)$$
+  - Standard series (`FED`, `INTRATE`, `CPI`, `REC`, `POL`): multiplier **$0.07$ (7%)**, capped at $\$0.02$ per contract.
+  - Index series (`INDEX`, `SPX`, `NASDAQ`): multiplier **$0.035$ (3.5%)**, capped at $\$0.0175$ per contract.
+  - Minimum fee: $\$0.01$ per executed order.
+- **Polymarket Dynamic Taker Fee**:
+  - Baseline standard binary markets: $0.0\text{ bps}$.
+  - Specialized / 15-minute crypto markets: dynamic rate (10–50 bps) read from market metadata.
 - **Estimated Slippage Buffer**: 10 bps ($0.0010$) default model.
 
 ---
@@ -160,15 +177,25 @@ To ensure telemetry persistence and zero duplicate delivery inflation, all Phase
 
 ## 7. Performance Benchmarks
 
-Microbenchmark execution on local development hardware (AMD Ryzen / Windows 11):
+Microbenchmark execution on local development hardware (AMD Ryzen / Windows 11 / NVMe SSD / ClickHouse 25.8 Docker) measured via `scripts/benchmark_cross_venue.py`:
 
-| Operation | Throughput | Latency |
-|---|---|---|
-| **Book Normalization** | 79,084.76 ops/sec | 12.65 us/op |
-| **Ladder VWAP (5 levels)** | 323,356.18 ops/sec | 3.09 us/op |
-| **Fee Engine Evaluation** | 84,401.15 ops/sec | 11.85 us/op |
-| **Full Scanner Pair Evaluation** | 20,255.28 pairs/sec | 49.37 us/pair |
-| **ClickHouse Historical Analytics** | ~0.9 - 1.1 queries/sec | 1,035 - 1,136 ms |
+| Operation | Throughput | Latency | Execution Model |
+|---|---|---|---|
+| **Book Normalization** | 56,083.34 ops/sec | 17.83 us/op | Millionth-tick integer scaling & synthetic quote synthesis |
+| **Ladder VWAP (5 levels)** | 355,224.52 ops/sec | 2.82 us/op | Vectorized multi-tier orderbook depth traversal |
+| **Fee Schedule Engine (`v2026.2`)** | 67,339.25 ops/sec | 14.85 us/op | Kalshi CFTC series multiplier + ceil-cent rounding |
+| **Full Scanner Pair Evaluation** | 13,125.86 pairs/sec | 76.19 us/pair | Full 8-state gating, freshness, VWAP, and fee evaluation |
+
+### ClickHouse Historical Analytics Latency (Persistent Client Pool)
+- `top_spread_pairs`: **p50 = 33.20 ms** | p95 = 42.03 ms
+- `opportunity_frequency`: **p50 = 27.59 ms** | p95 = 37.04 ms
+- `duration_stats`: **p50 = 24.75 ms** | p95 = 26.56 ms
+- `venue_comparison`: **p50 = 21.29 ms** | p95 = 25.80 ms
+- `quote_freshness`: **p50 = 22.00 ms** | p95 = 25.50 ms
+- Server-side execution elapsed time: **4.13 ms** (down from 1,035 ms by eliminating Windows IPv6 DNS timeout and pooling HTTP connections).
+
+> [!NOTE]
+> Microbenchmarks evaluate synthetic in-memory test fixtures for algorithmic throughput. Zero live exchange orders were executed.
 
 ---
 
@@ -176,13 +203,13 @@ Microbenchmark execution on local development hardware (AMD Ryzen / Windows 11):
 
 | Component | Test Suite | Tests | Result |
 |---|---|---|---|
-| **Phase 6 Cross-Venue Intelligence** | `tests/test_cross_venue.py` | 23 | **23/23 PASSED** |
+| **Phase 6 Cross-Venue Intelligence** | `tests/test_cross_venue.py` | 26 | **26/26 PASSED** |
 | **Phase 5 Wallet Intelligence & Markout** | `tests/test_wallet_markout.py` | 28 | **28/28 PASSED** |
 | **Phase 4 ClickHouse Analytics** | `tests/test_clickhouse_analytics.py` | 16 | **16/16 PASSED** |
 | **Phase 3 C++ Engine & Orderbook** | `tests/test_phase3.py` | 10 | **10/10 PASSED** |
 | **Phase 2 Ingestion & State** | `tests/test_phase2.py` | 19 | **19/19 PASSED** |
 | **End-to-End Pipeline** | `tests/test_pipeline.py` | 3 | **3/3 PASSED** |
-| **Total Test Suite** | `python -m pytest tests/` | 100 | **99 PASSED, 1 SKIPPED** (Live ClickHouse) |
+| **Total Test Suite** | `python -m pytest tests/` | 103 | **102 PASSED, 1 SKIPPED** (Live ClickHouse) |
 | **C++20 Microstructure Engine** | `python scripts/build_engine.py --test` | Suite | **ALL PASSED** |
 | **React 19 Terminal Workspace** | `npm --prefix frontend run build` | 1,578 modules | **PASSED (0 errors, 85.65 kB gzip)** |
 

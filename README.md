@@ -615,16 +615,16 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 
 ## 11. Testing & Verification
 
-PolyPulse includes automated test suites across all layers (100 test items, 99 passing, 1 skipped):
+PolyPulse includes automated test suites across all layers (103 test items, 102 passing, 1 skipped):
 
 ```powershell
 # 1. C++ Engine Unit Tests
 python scripts/build_engine.py --test
 
-# 2. Python Test Suite (All 100 tests across live feeds, C++ FFI, ClickHouse, Markouts & Cross-Venue)
+# 2. Python Test Suite (All 103 tests across live feeds, C++ FFI, ClickHouse, Markouts & Cross-Venue)
 python -m pytest tests/
 
-# 3. Cross-Venue Intelligence & Arbitrage Scanner Tests (23 tests)
+# 3. Cross-Venue Intelligence & Arbitrage Scanner Tests (26 tests)
 python -m pytest tests/test_cross_venue.py -v
 
 # 4. Wallet Intelligence & Markout Analytics Tests (28 tests)
