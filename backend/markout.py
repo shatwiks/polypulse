@@ -5,6 +5,14 @@ Markout evaluates post-trade market movement relative to execution price:
 - Sell: exec_price - future_mid
 - Basis points (bps): (markout / exec_price) * 10,000
 
+Timing & Status Architecture:
+- Observation Tolerance: candidate snapshot must lie within [T_target - 0.5s, T_target + 5.0s].
+- Quote Freshness: candidate snapshot quote age must not exceed max_quote_age_seconds (10s).
+- Quote Invariants: bids/asks must be positive with best_ask > best_bid (crossed/locked rejected).
+- Pending vs Finalized: for horizon H, wait until at least T_target + 5.0s + 5.0s grace period
+  before finalizing an 'unavailable' observation.
+- Stable Execution Partitioning: stores immutable trade_timestamp for monthly partition safety.
+
 IMPORTANT:
 Markout measures adverse selection and market drift post-execution.
 It does NOT represent closed portfolio P&L, inventory carrying cost, or settlement payout.
@@ -12,6 +20,7 @@ It does NOT represent closed portfolio P&L, inventory carrying cost, or settleme
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.events import now_utc, utc_timestamp
@@ -29,13 +38,16 @@ class TradeMarkout:
     side: str
     horizon_seconds: int
     calc_version: str
-    status: str  # "available", "unavailable", "stale", "crossed"
+    status: str  # "available", "unavailable", "stale", "crossed", "pending"
     exec_price: float
     future_mid: Optional[float]
     markout: Optional[float]
     markout_bps: Optional[float]
     observation_time: Optional[str]
+    trade_timestamp: Optional[str]
     calculated_at: str
+    token_id: Optional[str] = None
+    condition_id: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -55,7 +67,10 @@ class TradeMarkout:
             "markout": f"{self.markout:.6f}" if self.markout is not None else None,
             "markout_bps": f"{self.markout_bps:.4f}" if self.markout_bps is not None else None,
             "observation_time": self.observation_time,
-            "calculated_at": self.calculated_at
+            "trade_timestamp": self.trade_timestamp or self.calculated_at,
+            "calculated_at": self.calculated_at,
+            "token_id": self.token_id,
+            "condition_id": self.condition_id
         }
 
 
@@ -122,19 +137,31 @@ def evaluate_markout(
     exec_timestamp: float,
     horizon_seconds: int,
     snapshots: List[Dict[str, Any]],
-    tolerance_seconds: float = 5.0,
-    max_staleness_seconds: float = 10.0,
-    calc_version: str = CURRENT_CALC_VERSION
+    tolerance_pre_seconds: float = 0.5,
+    tolerance_post_seconds: float = 5.0,
+    max_quote_age_seconds: float = 10.0,
+    calc_version: str = CURRENT_CALC_VERSION,
+    current_time: Optional[float] = None,
+    grace_period_seconds: float = 5.0,
+    trade_timestamp_iso: Optional[str] = None,
+    token_id: Optional[str] = None,
+    condition_id: Optional[str] = None
 ) -> TradeMarkout:
     """
-    Evaluates markout for a single trade and horizon given a list of candidate snapshot records.
-    Candidate snapshots should contain 'snapshot_time' (timestamp or ISO str), 'best_bid', 'best_ask', 'valid'.
+    Evaluates markout for a single trade and horizon given candidate snapshot records.
+    Strictly differentiates:
+      1. Observation window tolerance: [T_target - tolerance_pre, T_target + tolerance_post]
+      2. Quote freshness: quote_age <= max_quote_age_seconds
+      3. Quote invariants: best_ask > best_bid > 0
+      4. Pending vs Unavailable: do not finalize unavailable until target + post + grace expires.
     """
     calc_time = now_utc()
     target_time = exec_timestamp + horizon_seconds
+    now_ts = current_time if current_time is not None else time.time()
     
-    # Filter candidates in [target_time, target_time + tolerance_seconds]
-    # Also support [target_time - 1.0, target_time + tolerance_seconds] to catch exact boundary
+    trade_iso = trade_timestamp_iso or datetime.fromtimestamp(exec_timestamp, timezone.utc).isoformat(timespec="milliseconds")
+
+    # Filter candidate snapshots within observation window [target_time - tolerance_pre, target_time + tolerance_post]
     candidates = []
     for s in snapshots:
         st = s.get("snapshot_time") or s.get("recorded_at")
@@ -149,11 +176,15 @@ def evaluate_markout(
             continue
         
         diff = t - target_time
-        # In window [0, tolerance_seconds] or small negative boundary
-        if -0.5 <= diff <= tolerance_seconds:
+        if -tolerance_pre_seconds <= diff <= tolerance_post_seconds:
             candidates.append((abs(diff), t, s))
     
+    # If no candidate snapshot found in observation window:
     if not candidates:
+        # Check if the evaluation window has actually closed
+        finalize_threshold = target_time + tolerance_post_seconds + grace_period_seconds
+        status = "pending" if now_ts < finalize_threshold else "unavailable"
+        
         return TradeMarkout(
             trade_id=trade_id,
             wallet_address=wallet_address,
@@ -162,23 +193,29 @@ def evaluate_markout(
             side=side,
             horizon_seconds=horizon_seconds,
             calc_version=calc_version,
-            status="unavailable",
+            status=status,
             exec_price=exec_price,
             future_mid=None,
             markout=None,
             markout_bps=None,
             observation_time=None,
-            calculated_at=calc_time
+            trade_timestamp=trade_iso,
+            calculated_at=calc_time,
+            token_id=token_id,
+            condition_id=condition_id
         )
     
     # Pick closest snapshot to target_time
     candidates.sort(key=lambda x: x[0])
     delta, obs_ts, best_snap = candidates[0]
-    
     obs_iso = datetime.fromtimestamp(obs_ts, timezone.utc).isoformat(timespec="milliseconds")
-    
-    # Check max staleness
-    if delta > max_staleness_seconds:
+
+    # Check quote freshness:
+    # 1. explicit staleness flag on snapshot
+    # 2. quote age / update delay
+    is_feed_stale = bool(best_snap.get("is_stale", False))
+    quote_age = float(best_snap.get("quote_age_seconds", delta))
+    if is_feed_stale or quote_age > max_quote_age_seconds:
         return TradeMarkout(
             trade_id=trade_id,
             wallet_address=wallet_address,
@@ -193,15 +230,19 @@ def evaluate_markout(
             markout=None,
             markout_bps=None,
             observation_time=obs_iso,
-            calculated_at=calc_time
+            trade_timestamp=trade_iso,
+            calculated_at=calc_time,
+            token_id=token_id,
+            condition_id=condition_id
         )
-    
+
+    # Check quote validity / invariants
     bid = float(best_snap["best_bid"]) if best_snap.get("best_bid") is not None else None
     ask = float(best_snap["best_ask"]) if best_snap.get("best_ask") is not None else None
     valid_flag = int(best_snap.get("valid", 1))
-    
-    status, mid = validate_snapshot_quotes(bid, ask, valid_flag)
-    if status != "available" or mid is None:
+
+    quote_status, mid = validate_snapshot_quotes(bid, ask, valid_flag)
+    if quote_status != "available" or mid is None:
         return TradeMarkout(
             trade_id=trade_id,
             wallet_address=wallet_address,
@@ -210,15 +251,19 @@ def evaluate_markout(
             side=side,
             horizon_seconds=horizon_seconds,
             calc_version=calc_version,
-            status=status,
+            status=quote_status,
             exec_price=exec_price,
             future_mid=None,
             markout=None,
             markout_bps=None,
             observation_time=obs_iso,
-            calculated_at=calc_time
+            trade_timestamp=trade_iso,
+            calculated_at=calc_time,
+            token_id=token_id,
+            condition_id=condition_id
         )
-    
+
+    # Valid observation found: compute markout and bps
     markout, markout_bps = calculate_markout_metrics(exec_price, side, mid)
     return TradeMarkout(
         trade_id=trade_id,
@@ -234,5 +279,8 @@ def evaluate_markout(
         markout=markout,
         markout_bps=markout_bps,
         observation_time=obs_iso,
-        calculated_at=calc_time
+        trade_timestamp=trade_iso,
+        calculated_at=calc_time,
+        token_id=token_id,
+        condition_id=condition_id
     )

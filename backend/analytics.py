@@ -656,12 +656,15 @@ class ClickHouseAnalytics:
         query = """
         SELECT
             wallet_address AS wallet,
-            count() AS trade_count,
+            count() AS total_trades,
             countIf(status = 'available') AS available_count,
+            countIf(status = 'unavailable') AS unavailable_count,
+            countIf(status = 'stale') AS stale_count,
+            countIf(status = 'crossed') AS crossed_count,
             avgIf(markout, status = 'available') AS avg_markout,
             avgIf(markout_bps, status = 'available') AS avg_markout_bps,
             countIf(status = 'available' AND markout > 0) / nullIf(countIf(status = 'available'), 0) * 100 AS positive_percentage,
-            count() >= {min_trades:UInt32} AS qualified
+            countIf(status = 'available') >= {min_trades:UInt32} AS qualified
         FROM polypulse.trade_markouts FINAL
         WHERE horizon_seconds = {horizon:UInt16}
           AND calc_version = {calc_version:String}
@@ -677,8 +680,12 @@ class ClickHouseAnalytics:
         })
         return [{
             "wallet": r.get("wallet"),
-            "trade_count": int(r.get("trade_count", 0)),
+            "total_trades": int(r.get("total_trades", 0)),
+            "trade_count": int(r.get("total_trades", 0)),
             "available_count": int(r.get("available_count", 0)),
+            "unavailable_count": int(r.get("unavailable_count", 0)),
+            "stale_count": int(r.get("stale_count", 0)),
+            "crossed_count": int(r.get("crossed_count", 0)),
             "horizon_seconds": horizon,
             "avg_markout": round(float(r["avg_markout"]), 6) if r.get("avg_markout") is not None else None,
             "avg_markout_bps": round(float(r["avg_markout_bps"]), 2) if r.get("avg_markout_bps") is not None else None,

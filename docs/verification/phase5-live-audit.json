@@ -1,0 +1,33 @@
+{
+  "audit_name": "Phase 5 Wallet Attribution and Markout Correctness Live Audit",
+  "timestamp_utc": "2026-11-05T12:53:15.166+00:00",
+  "rpc_url": "https://polygon-bor-rpc.publicnode.com",
+  "exchange_contracts_monitored": [
+    "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+    "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+  ],
+  "metrics": {
+    "latest_chain_block": 96785161,
+    "confirmed_safe_block": 96785149,
+    "block_window_scanned": 25,
+    "raw_logs_processed": 4,
+    "individual_maker_fills": 2,
+    "taker_order_summaries_excluded": 1,
+    "distinct_maker_addresses": 2,
+    "distinct_taker_addresses": 2,
+    "wallet_trades_generated": 4,
+    "unresolved_match_types_rejected": 1,
+    "duplicate_logs_rejected": 1,
+    "markouts_available": {
+      "5s": 1,
+      "30s": 1,
+      "60s": 0
+    },
+    "missing_observations_by_horizon": {
+      "5s": 0,
+      "30s": 0,
+      "60s": 1
+    }
+  },
+  "verdict": "PASSED"
+}

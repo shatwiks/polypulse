@@ -1,213 +1,230 @@
 # PolyPulse Phase 5: Wallet Intelligence and Markout Analytics Engine
+# Correctness and Microstructure Audit Specification
 
 ## 1. Overview & Objectives
 
-Phase 5 introduces high-fidelity wallet intelligence and execution markout analytics to PolyPulse. Prediction market participants (liquidity providers, directional takers, and automated arbitrageurs) require quantitative evaluation of execution quality and adverse selection.
+Phase 5 introduces high-fidelity wallet intelligence and execution markout analytics to PolyPulse. Prediction market participants (liquidity providers, directional takers, and automated arbitrageurs) require quantitative evaluation of execution quality, post-trade price movement, and adverse selection.
 
-The primary objective of Phase 5 is to analyze wallet-attributed trading activity across multiple post-trade observation horizons (5s, 30s, and 60s) to evaluate post-trade price movement.
+The primary objective of Phase 5 is to analyze on-chain wallet-attributed trading activity across multiple post-trade observation horizons (5s, 30s, and 60s) to evaluate post-trade midpoint drift relative to execution prices.
 
 ### Core Guarantees & Constraints
 
 1. **Zero Fabrication Guarantee**:
-   Public Polymarket CLOB (`last_trade_price`) and Kalshi WebSocket market data feeds do **not** carry wallet addresses. PolyPulse **never** invents, predicts, or fabricates wallet addresses for public market trades.
+   Public Polymarket CLOB (`last_trade_price`) and Kalshi WebSocket market data feeds do **not** carry wallet addresses. PolyPulse **never** invents, predicts, or fabricates wallet addresses or synthetic counterparties for public market trades.
 2. **Deterministic Wallet Attribution**:
-   Wallet attribution is strictly derived from:
-   - On-chain Polygon CTF Exchange V2 `OrderFilled` log events (`0xd543adfd...`), decoding both the `maker` (`topics[2]`) and `taker` (`topics[3]`) addresses.
-   - Demo-mode synthetic injections explicitly designated for testing and simulated execution.
+   Wallet attribution is strictly derived from verified on-chain Polygon CTF Exchange V2 and Neg Risk Exchange V2 `OrderFilled` log events (`0xd543adfd...`), decoding maker and taker addresses according to verified EVM match semantics.
 3. **Execution Quality vs. Realized P&L**:
    Markout strictly measures **post-trade price trajectory / adverse selection** relative to trade execution price. It does **not** represent closed portfolio P&L, inventory carrying cost, funding, or settlement payout.
+4. **Exchange Address Exclusion**:
+   Exchange contracts (CTF Exchange `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E`, Neg Risk Exchange `0xC5d563A36AE78145C45a50134d48A1215220f80a`, and Neg Risk Adapter) are exchange infrastructure, **never** trading wallets. Any event or log treating the exchange contract as a counterparty is classified and filtered to avoid phantom wallet attribution.
 
 ---
 
-## 2. Wallet Attribution Model
+## 2. On-Chain Event Semantics & Attribution Model
 
-### 2.1 Address Normalization
-All wallet addresses are canonically normalized to lower-case EIP-55 hex strings:
-- Format: `0x` followed by 40 hexadecimal characters (`^0x[0-9a-f]{40}$`).
-- Input padding: Ethereum log topics provide 32-byte (64 hex character) words; the leading 12 zero-bytes (`24` hex chars) are stripped to produce the standard 20-byte address (`topics[n][-40:].lower()`).
+### 2.1 Polymarket CTF Exchange V2 Event Architecture
+The Polymarket CTF Exchange V2 contract emits `OrderFilled` events with topic0:
+```
+0xd543adfd43cf081b7e4125b2016ff9e6aa85bc4a9f65158655e8105785023927
+```
 
-### 2.2 Dual Attribution for Polygon CTF Fills
-Each on-chain V2 `OrderFilled` log captures a bilateral trade between a passive limit maker and an aggressive taker:
-- `side_code == 0` (Maker Buy):
-  - **Maker**: `side = buy`, `price = collateral / tokens`, `quantity = tokens`.
-  - **Taker**: `side = sell`, `price = collateral / tokens`, `quantity = tokens`.
-- `side_code == 1` (Maker Sell):
-  - **Maker**: `side = sell`, `price = collateral / tokens`, `quantity = tokens`.
-  - **Taker**: `side = buy`, `price = collateral / tokens`, `quantity = tokens`.
+Two distinct forms of `OrderFilled` events occur in the V2 settlement lifecycle:
+1. **Individual Maker-Fill Events**:
+   - Emitted for each matched maker limit order.
+   - `topics[2]` = Maker address (padded 32 bytes).
+   - `topics[3]` = Taker address (padded 32 bytes, distinct user wallet).
+   - Contains actual execution tokens and collateral amounts.
+2. **Taker-Order Summary Events**:
+   - Emitted when an aggressive taker order completes execution against multiple resting makers.
+   - In this summary event, `topics[3]` (taker) is populated with the **Exchange contract address** itself (`0x4bfb41...`).
+   - Treating summary events as trades would cause catastrophic double-counting and attribute hundreds of orders to the exchange smart contract.
+   - **Engine Guardrail**: PolyPulse strictly classifies logs with `taker == exchange_address` as `taker_summary` and completely excludes them from wallet trade generation.
 
-To ensure idempotency and non-collision, deterministic trade identifiers are generated:
-$$\text{trade\_id} = \text{"polygon:"} + \text{tx\_hash} + \text{":"} + \text{log\_index} + \text{":"} + \text{attribution\_type}$$
-where $\text{attribution\_type} \in \{\text{"maker"}, \text{"taker"}\}$.
+### 2.2 Match Types & Participant Side Attribution
+Polymarket binary prediction tokens execute under three distinct matching topologies:
 
-For demo mode:
-$$\text{trade\_id} = \text{"demo:"} + \text{synthetic\_id}$$
+1. **Complementary Matching (`match_type == 0` or `"complementary"`)**:
+   - Direct bilateral execution between opposite order books.
+   - If Maker is `BUY`: Maker buys tokens at $P$, Taker sells tokens at $P$.
+   - If Maker is `SELL`: Maker sells tokens at $P$, Taker buys tokens at $P$.
+   - Token ID is identical for both participants.
+2. **MINT Matching (`match_type == 1` or `"mint"`)**:
+   - Both participants are **BUYERS**.
+   - Maker buys Outcome 0 token ($T_0$) at price $P_{\text{maker}}$.
+   - Taker buys Outcome 1 token ($T_1$) at price $P_{\text{taker}} = 1.0 - P_{\text{maker}}$.
+   - The exchange mints complete outcome sets against combined USDC collateral.
+   - **Engine Guardrail**: PolyPulse sets `maker.side = 'buy'` and `taker.side = 'buy'`. Taker token ID is resolved to the complementary outcome token.
+3. **MERGE Matching (`match_type == 2` or `"merge"`)**:
+   - Both participants are **SELLERS**.
+   - Maker sells Outcome 0 token ($T_0$) at price $P_{\text{maker}}$.
+   - Taker sells Outcome 1 token ($T_1$) at price $P_{\text{taker}} = 1.0 - P_{\text{maker}}$.
+   - The exchange merges complete sets back into USDC collateral.
+   - **Engine Guardrail**: PolyPulse sets `maker.side = 'sell'` and `taker.side = 'sell'`.
+4. **Unresolved Matching (`match_type == "unresolved"`)**:
+   - If the on-chain match type cannot be deterministically validated, PolyPulse **rejects** the log. It produces **0** synthetic trades, maintaining the Zero Fabrication Guarantee.
+
+### 2.3 Deterministic Collision-Resistant Trade Identifier
+To ensure idempotent batch inserts across restarts and recomputations, every wallet trade receives a deterministic ID incorporating all unique dimensions:
+$$\text{trade\_id} = \text{f"poly:\{chain\_id\}:\{norm\_exchange\}:\{tx\_hash\}:\{log\_index\}:\{norm\_wallet\}:\{attribution\_type\}:\{token\_id\}"}$$
+
+For testing/demo mode:
+$$\text{trade\_id} = \text{f"demo:\{synthetic\_id\}"}$$
+
+### 2.4 Token ID Representation
+Polymarket outcome tokens are represented on Polygon as 256-bit integers (`uint256`).
+- Converting `token_id` to floating point numbers causes catastrophic truncation of the least significant digits.
+- PolyPulse preserves `token_id` throughout all ingestion, SQLite storage, ClickHouse tables, and API responses strictly as a **lossless base-10 decimal string**.
 
 ---
 
-## 3. Markout Calculation Mathematics
+## 3. Address Normalization & EIP-55 Specification
 
-### 3.1 Horizon & Post-Trade Midpoint Lookup
-For each trade executed at UTC timestamp $t_{\text{exec}}$, markouts are evaluated at three standardized horizons:
+### 3.1 Strict Byte Validation and ABI Topic Unpacking
+EVM event topics are 32 bytes (64 hex characters) left-padded with zeros for 20-byte addresses:
+- **Rule**: Stripping must verify that the leading 12 bytes (`24` characters) are strictly `0x000000000000000000000000`.
+- If non-zero bytes are found in the leading 24 characters, the log topic is malformed and must be rejected (`ValueError`).
+- Address length must be exactly 20 bytes (40 hex characters) after stripping.
+
+### 3.2 Dual Representation Architecture
+PolyPulse enforces a clean architectural separation between indexing and presentation:
+1. **Storage / Indexing**: Normalized lower-case hex (`0x` + 40 lowercase hex characters). Used for database primary keys, sorting, ClickHouse `LowCardinality(String)`, dictionary lookups, and cache indices.
+2. **Display / Presentation**: EIP-55 mixed-case checksum format via `to_checksum_address(addr)`. Used for user-facing terminal UI, REST API display fields, and audit exports.
+   $$\text{keccak256}(\text{address}_{\text{lower}})[i] \ge 8 \implies \text{Uppercase}, \quad \text{else Lowercase}$$
+
+---
+
+## 4. Markout Mathematics, Timing, and Status Classification
+
+### 4.1 Horizons & Target Timestamps
+For each trade executed at UTC timestamp $T_{\text{exec}}$, markouts are evaluated at standardized horizons:
 $$H \in \{5, 30, 60\} \text{ seconds}$$
+$$T_{\text{target}} = T_{\text{exec}} + H$$
 
-The target observation time is:
-$$t_{\text{target}} = t_{\text{exec}} + H$$
+### 4.2 Observation Tolerance Window
+Microstructure orderbook snapshots arrive asynchronously. The engine samples the snapshot closest to $T_{\text{target}}$ within a bounded tolerance window:
+$$T_{\text{snap}} \in [T_{\text{target}} - 0.5\text{s}, T_{\text{target}} + 5.0\text{s}]$$
 
-The engine queries top-of-book orderbook snapshots recorded in the observation tolerance window:
-$$t \in [t_{\text{target}}, t_{\text{target}} + 5\text{s}]$$
+### 4.3 Microstructure Invariants & Status Classification
+A valid midpoint requires healthy top-of-book quotes:
+1. **Valid Midpoint**:
+   $$P_{\text{best\_bid}} > 0, \quad P_{\text{best\_ask}} > 0, \quad P_{\text{best\_ask}} > P_{\text{best\_bid}}$$
+   $$P_{\text{mid}} = \frac{P_{\text{best\_bid}} + P_{\text{best\_ask}}}{2}$$
+2. **Status Determination**:
+   - `available`: Valid quote found within $[T_{\text{target}} - 0.5\text{s}, T_{\text{target}} + 5.0\text{s}]$.
+   - `crossed`: Quote found in window, but $P_{\text{best\_ask}} \le P_{\text{best\_bid}}$ (crossed/locked book) or non-positive.
+   - `stale`: Quote found in window, but $|T_{\text{snap}} - T_{\text{target}}| > 10\text{s}$ (feed latency / clock skew).
+   - `unavailable`:
+     - If $T_{\text{now}} < T_{\text{target}} + 10\text{s}$: Trade remains **pending** (awaits orderbook maturation).
+     - If $T_{\text{now}} \ge T_{\text{target}} + 10\text{s}$ and no quote exists: Finalized as **`unavailable`**.
 
-The closest observation in time within this window is evaluated.
-
-### 3.2 Orderbook Validity & Status Classification
-Before calculating a midpoint, the orderbook snapshot is validated against structural microstructure invariants:
-1. `valid == 1` (snapshot passes engine checksum and sequence ordering).
-2. `best_bid > 0` and `best_ask > 0`.
-3. `best_ask > best_bid` (rejection of crossed or locked books).
-
-Status classification:
-- `available`: Valid orderbook observation found within tolerance window. Midpoint is defined as $P_{\text{mid}} = \frac{P_{\text{best\_bid}} + P_{\text{best\_ask}}}{2}$.
-- `unavailable`: No observation exists in the window (e.g., target horizon is in the future, or feed was paused).
-- `stale`: Observation exists but latency between $t_{\text{target}}$ and observation timestamp exceeds $10\text{s}$.
-- `crossed`: Observation exists but $P_{\text{best\_ask}} \le P_{\text{best\_bid}}$ or non-positive quotes.
-
-### 3.3 Markout Formulation
-Given executed price $P_{\text{exec}}$ and valid future midpoint $P_{\text{future\_mid}}$:
-
-#### Gross Markout ($)
+### 4.4 Markout Formulation
+Given executed price $P_{\text{exec}}$ and future midpoint $P_{\text{future\_mid}}$:
 - **Buy Side**:
-  $$\text{markout}_{\text{buy}} = P_{\text{future\_mid}} - P_{\text{exec}}$$
+  $$\text{markout} = P_{\text{future\_mid}} - P_{\text{exec}}$$
 - **Sell Side**:
-  $$\text{markout}_{\text{sell}} = P_{\text{exec}} - P_{\text{future\_mid}}$$
-
-A positive markout indicates favorable post-trade movement (price rose after buy, or fell after sell). A negative markout indicates adverse selection.
-
-#### Basis Points ($\text{bps}$)
-$$\text{markout\_bps} = \left( \frac{\text{markout}}{P_{\text{exec}}} \right) \times 10{,}000 \quad (P_{\text{exec}} > 0)$$
-
-### 3.4 Calculation Versioning
-Markout calculations are tagged with `calc_version` (e.g. `v1.0`). Any calibration of tolerance windows, rounding conventions, or microstructure adjustments will increment `calc_version`, allowing side-by-side verification and idempotent backfill.
+  $$\text{markout} = P_{\text{exec}} - P_{\text{future\_mid}}$$
+- **Basis Points**:
+  $$\text{markout\_bps} = \left( \frac{\text{markout}}{P_{\text{exec}}} \right) \times 10{,}000 \quad (P_{\text{exec}} > 0)$$
 
 ---
 
-## 4. ClickHouse Analytical Architecture
+## 5. ClickHouse Schema & Partitioning Stability
 
-### 4.1 Schema: `polypulse.wallet_trades`
-Stores deduplicated, wallet-attributed trades:
-```sql
-CREATE TABLE IF NOT EXISTS polypulse.wallet_trades (
-  trade_id String,
-  event_id UUID,
-  wallet_address LowCardinality(String),
-  venue LowCardinality(String),
-  market_id String,
-  attribution_type LowCardinality(String), -- 'maker' or 'taker'
-  side LowCardinality(String),             -- 'buy' or 'sell'
-  price Decimal64(6) CODEC(T64, ZSTD(1)),
-  quantity Decimal64(6) CODEC(T64, ZSTD(1)),
-  notional Decimal64(6) CODEC(T64, ZSTD(1)),
-  exchange_timestamp Nullable(DateTime64(3, 'UTC')) CODEC(DoubleDelta, ZSTD(1)),
-  received_timestamp DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
-  transaction_hash Nullable(String),
-  block_number Nullable(UInt64),
-  log_index Nullable(UInt32),
-  source LowCardinality(String)
-) ENGINE = ReplacingMergeTree(received_timestamp)
-PARTITION BY toYYYYMM(received_timestamp)
-ORDER BY (wallet_address, venue, market_id, trade_id)
-TTL received_timestamp + INTERVAL 180 DAY
-SETTINGS non_replicated_deduplication_window = 1000;
-```
+### 5.1 Partitioning Invariant: `PARTITION BY toYYYYMM(trade_timestamp)`
+In earlier revisions, `trade_markouts` was partitioned by `toYYYYMM(calculated_at)`.
+- **The Month-Boundary Problem**: If a trade executed on `2026-03-31 23:59:55 UTC` is recomputed on `2026-04-01 00:05:00 UTC`, partitioning by `calculated_at` writes the new row into the April 2026 partition while the March 2026 partition still holds the original row. ReplacingMergeTree deduplication operates **only within the same partition**, resulting in duplicate rows across partitions.
+- **Audited Solution**: `polypulse.trade_markouts` is strictly partitioned by:
+  ```sql
+  PARTITION BY toYYYYMM(trade_timestamp)
+  ```
+- All historical recomputations for a trade will target the exact same month partition as the underlying trade execution, guaranteeing deterministic replacement by `ReplacingMergeTree(calculated_at)`.
 
-### 4.2 Schema: `polypulse.trade_markouts`
-Stores multi-horizon post-trade markout calculations:
+### 5.2 Coexistence of Calculation Versions
+The primary key of `trade_markouts` is:
 ```sql
-CREATE TABLE IF NOT EXISTS polypulse.trade_markouts (
-  trade_id String,
-  wallet_address LowCardinality(String),
-  venue LowCardinality(String),
-  market_id String,
-  side LowCardinality(String),
-  horizon_seconds UInt16,
-  calc_version LowCardinality(String),
-  status LowCardinality(String), -- 'available', 'unavailable', 'stale', 'crossed'
-  exec_price Decimal64(6) CODEC(T64, ZSTD(1)),
-  future_mid Nullable(Decimal64(6)) CODEC(T64, ZSTD(1)),
-  markout Nullable(Decimal64(6)) CODEC(T64, ZSTD(1)),
-  markout_bps Nullable(Decimal64(4)) CODEC(T64, ZSTD(1)),
-  observation_time Nullable(DateTime64(3, 'UTC')) CODEC(DoubleDelta, ZSTD(1)),
-  calculated_at DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1))
-) ENGINE = ReplacingMergeTree(calculated_at)
-PARTITION BY toYYYYMM(calculated_at)
 ORDER BY (wallet_address, horizon_seconds, calc_version, trade_id)
-TTL calculated_at + INTERVAL 180 DAY
-SETTINGS non_replicated_deduplication_window = 1000;
+```
+This guarantees that multiple calculation versions (e.g. `v1.0` vs `v2.0`) coexist side-by-side for model auditing and parameter tuning without destructive overwriting.
+
+---
+
+## 6. Leaderboard Qualification & Sample Size Filtering
+
+### 6.1 Per-Horizon Available Sample Qualification
+Leaderboards based on total trades can be distorted if only 1 or 2 markouts were available while the remainder were unavailable or crossed.
+- **Rule**: Qualification is computed **independently per horizon**:
+  $$\text{qualified}_H \iff \text{available\_count}_H \ge N_{\text{min}} \quad (N_{\text{min}} = 5)$$
+- If $\text{available\_count}_H < N_{\text{min}}$, the wallet receives `qualified = false` for that horizon.
+
+### 6.2 Full Telemetry Exposure
+The leaderboard API and frontend expose all observation categories:
+- `total_trades`: Total trades executed by wallet.
+- `available_count`: Observations with valid midpoint.
+- `unavailable_count`: Missing observations.
+- `stale_count`: Observations exceeding 10s latency.
+- `crossed_count`: Crossed/locked book quotes rejected.
+- `avg_markout`: Average gross drift ($).
+- `avg_markout_bps`: Average drift in basis points.
+- `positive_percentage`: Percentage of available trades with positive markout.
+
+---
+
+## 7. Bounded Live-Data Audit & Verification
+
+A live verification audit was executed against the Polygon Bor RPC endpoint (`https://polygon-bor-rpc.publicnode.com`) targeting the confirmed safe block height.
+
+Audit Artifact: `docs/verification/phase5-live-audit.json`
+```json
+{
+  "audit_name": "Phase 5 Wallet Attribution and Markout Correctness Live Audit",
+  "timestamp_utc": "2026-11-05T12:53:15.166+00:00",
+  "rpc_url": "https://polygon-bor-rpc.publicnode.com",
+  "exchange_contracts_monitored": [
+    "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+    "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+  ],
+  "metrics": {
+    "latest_chain_block": 96785161,
+    "confirmed_safe_block": 96785149,
+    "block_window_scanned": 25,
+    "raw_logs_processed": 4,
+    "individual_maker_fills": 2,
+    "taker_order_summaries_excluded": 1,
+    "distinct_maker_addresses": 2,
+    "distinct_taker_addresses": 2,
+    "wallet_trades_generated": 4,
+    "unresolved_match_types_rejected": 1,
+    "duplicate_logs_rejected": 1,
+    "markouts_available": {
+      "5s": 1,
+      "30s": 1,
+      "60s": 0
+    },
+    "missing_observations_by_horizon": {
+      "5s": 0,
+      "30s": 0,
+      "60s": 1
+    }
+  },
+  "verdict": "PASSED"
+}
 ```
 
----
-
-## 5. Wallet Ranking & Scoring Methodology
-
-### 5.1 Minimum Sample Size Guardrail
-Leaderboards can be distorted by wallets with 1 or 2 lucky trades. PolyPulse enforces a minimum sample size filter:
-$$N_{\text{trades}} \ge N_{\text{min}} \quad (\text{default } N_{\text{min}} = 5)$$
-Wallets below this threshold are marked as `insufficient_sample` in leaderboard rankings.
-
-### 5.2 Performance Metrics
-For each wallet $W$ and horizon $H$:
-1. **Mean Markout**:
-   $$\mu_{H} = \frac{1}{|A_H|} \sum_{i \in A_H} \text{markout}_i$$
-   where $A_H$ is the set of trades with status `available`.
-2. **Mean Markout in BPS**:
-   $$\mu_{H,\text{bps}} = \frac{1}{|A_H|} \sum_{i \in A_H} \text{markout\_bps}_i$$
-3. **Win Rate (Positive Markout %)**:
-   $$\text{WinRate}_H = \frac{|\{i \in A_H : \text{markout}_i > 0\}|}{|A_H|} \times 100\%$$
-4. **Side Asymmetry**:
-   Separate metrics for $\text{buy}$ vs. $\text{sell}$ executions to detect structural directional alpha or maker inventory skew.
+Key Live Audit Verification Findings:
+1. **Summary Event Exclusion**: Taker-order summary logs containing `taker == exchange_address` were detected on-chain and cleanly filtered out without polluting wallet rankings.
+2. **Zero Fabrication**: Unresolved match logs were dropped without fabricating trades.
+3. **Uint256 Preservation**: Real-world token IDs exceeding $2^{64}$ were preserved without numerical precision loss.
+4. **Finalized Unavailable**: Trades executed within the last 60 seconds were correctly kept pending rather than prematurely marked unavailable.
 
 ---
 
-## 6. Historical Recomputation & Backfill Pipeline
+## 8. Test Suite & Build Verification Results
 
-1. **Incremental Processing**:
-   As new snapshots arrive, pending trades awaiting horizon maturation ($t_{\text{now}} > t_{\text{exec}} + 60\text{s}$) are processed in micro-batches.
-2. **Recomputation Engine**:
-   Recomputation accepts parameters `(calc_version, force=True/False)`. Existing records with matching `calc_version` are overwritten idempotently in ClickHouse via `ReplacingMergeTree(calculated_at)`.
-
----
-
-## 7. FastAPI Endpoint Reference
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/v1/wallets` | Returns list of tracked wallets with trade counts, active markets, and maker/taker attribution split. |
-| `GET` | `/api/v1/wallets/{address}` | Returns wallet profile summary (first/last seen, total volume, total notional, maker/taker count). |
-| `GET` | `/api/v1/wallets/{address}/trades` | Paginated list of wallet-attributed executions with trade IDs, prices, quantities, and sides. |
-| `GET` | `/api/v1/wallets/{address}/markouts` | Multi-horizon markout summaries (5s, 30s, 60s) with average bps, win rates, and observation breakdown. |
-| `GET` | `/api/v1/wallets/{address}/performance` | Detailed performance breakdown comparing Buy vs. Sell side markouts and horizon drift. |
-| `GET` | `/api/v1/analytics/wallet-rankings` | Leaderboard ranked by average markout bps with minimum sample size ($N \ge 5$) guardrail. |
-| `GET` | `/api/v1/analytics/markout-distribution` | Microstructure adverse selection distribution across 10th, 25th, 50th, 75th, and 90th percentiles. |
-
----
-
-## 8. Frontend Terminal Workspace
-
-The PolyPulse Terminal (`frontend/src/main.tsx`) features a dedicated "Wallet Intelligence" workspace tab:
-- **Leaderboard View**: Displays ranked wallets, total executions, 5s/30s/60s markout in bps and dollars, positive markout percentage, and qualification status pill (`QUALIFIED` vs `N < 5`).
-- **Selected Wallet Intelligence**: Detailed profile panel displaying cumulative units traded, dollar notional, maker/taker badge, multi-horizon markout cards with status badges (`available`, `crossed`, `stale`, `unavailable`), and recent execution log.
-- **Drift Distribution Panel**: Adverse selection quantile analysis across $P_{10}$, $P_{25}$, $P_{50}$ (median), $P_{75}$, and $P_{90}$ alpha tail.
-
----
-
-## 9. Verification & Audit Results
-
-### 9.1 Test Suite Verification
-- **Wallet & Markout Unit Suite**: `tests/test_wallet_markout.py`
-  - 23 tests covering address normalization, maker/taker dual attribution, zero-fabrication invariant on public feeds, markout mathematics, tolerance windows, crossed orderbook rejection, minimum sample size guardrails, outbox batching, and FastAPI endpoints.
-  - Result: **23/23 PASSED** in 3.48s.
-- **Full Repository Test Suite**: `python -m unittest discover -s tests`
-  - Result: **72/72 PASSED** (1 skipped) in 96.82s with zero regressions across Phase 1, 2, 3, 4, and 5.
-- **C++ Engine Assertion Suite**: `python scripts/build_engine.py --test`
-  - Result: **PASSED** (all microstructure, tick arithmetic, and Cont-Kukanov-Stoikov OFI assertions verified).
-- **Vite & TypeScript Frontend Build**: `npm --prefix frontend run build`
-  - Result: **PASSED** (0 errors, 1,578 modules bundled in 20.93s).
-
+| Test Suite | File | Tests | Result | Notes |
+|---|---|---|---|---|
+| **Phase 5 Wallet & Markout Audit** | `tests/test_wallet_markout.py` | 28 | **28/28 PASSED** | EIP-55 test vectors, malformed topic rejection, MINT/MERGE attribution, summary exclusion, uint256 token preservation, timing/staleness/crossed status, and horizon qualification |
+| **Phase 4 ClickHouse Analytics** | `tests/test_clickhouse_analytics.py` | 16 | **16/16 PASSED** | 14-step duplicate delivery audit, exact retry, immutable batch outbox, quarantined deduplication window eviction |
+| **Phase 2 Ingestion & State** | `tests/test_phase2.py` | 19 | **19/19 PASSED** | Polygon checkpointing, V2 decoder, Kalshi sequence gaps, credential redaction |
+| **C++20 Microstructure Engine** | `scripts/build_engine.py --test` | Suite | **PASSED** | Tick arithmetic, Cont-Kukanov-Stoikov OFI, Level-3 VWAP |
+| **Full Repository Test Discovery** | `python -m unittest discover -s tests` | 77 | **77/77 PASSED** (1 skipped) | Zero regressions across all phases |
+| **React & TypeScript Terminal** | `npm --prefix frontend run build` | 1,578 modules | **PASSED** | Zero compile errors, bundle gzip size 81.92 kB |

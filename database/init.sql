@@ -248,9 +248,16 @@ CREATE TABLE IF NOT EXISTS polypulse.wallet_trades (
   notional Decimal64(6) CODEC(T64, ZSTD(1)),
   exchange_timestamp Nullable(DateTime64(3, 'UTC')) CODEC(DoubleDelta, ZSTD(1)),
   received_timestamp DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+  chain_id UInt32 CODEC(T64, ZSTD(1)),
+  exchange_address LowCardinality(String),
   transaction_hash Nullable(String),
   block_number Nullable(UInt64),
   log_index Nullable(UInt32),
+  condition_id Nullable(String),
+  token_id String,
+  outcome_label Nullable(String),
+  timestamp_source LowCardinality(String),
+  match_type LowCardinality(String),
   source LowCardinality(String)
 ) ENGINE = ReplacingMergeTree(received_timestamp)
 PARTITION BY toYYYYMM(received_timestamp)
@@ -275,10 +282,13 @@ CREATE TABLE IF NOT EXISTS polypulse.trade_markouts (
   markout Nullable(Decimal64(6)) CODEC(T64, ZSTD(1)),
   markout_bps Nullable(Decimal64(4)) CODEC(T64, ZSTD(1)),
   observation_time Nullable(DateTime64(3, 'UTC')) CODEC(DoubleDelta, ZSTD(1)),
-  calculated_at DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1))
+  trade_timestamp DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+  calculated_at DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+  token_id Nullable(String),
+  condition_id Nullable(String)
 ) ENGINE = ReplacingMergeTree(calculated_at)
-PARTITION BY toYYYYMM(calculated_at)
+PARTITION BY toYYYYMM(trade_timestamp)
 ORDER BY (wallet_address, horizon_seconds, calc_version, trade_id)
-TTL calculated_at + INTERVAL 180 DAY
+TTL trade_timestamp + INTERVAL 180 DAY
 SETTINGS non_replicated_deduplication_window = 1000;
 

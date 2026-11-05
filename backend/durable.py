@@ -113,9 +113,16 @@ class DurableJournal(Journal):
           notional TEXT NOT NULL,
           exchange_timestamp TEXT,
           received_timestamp TEXT NOT NULL,
+          chain_id INTEGER DEFAULT 137,
+          exchange_address TEXT DEFAULT '0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e',
           transaction_hash TEXT,
           block_number INTEGER,
           log_index INTEGER,
+          condition_id TEXT,
+          token_id TEXT DEFAULT '0',
+          outcome_label TEXT,
+          timestamp_source TEXT DEFAULT 'block_header',
+          match_type TEXT DEFAULT 'complementary',
           source TEXT NOT NULL,
           exported INTEGER NOT NULL DEFAULT 0
         );
@@ -136,7 +143,10 @@ class DurableJournal(Journal):
           markout REAL,
           markout_bps REAL,
           observation_time TEXT,
+          trade_timestamp TEXT,
           calculated_at TEXT NOT NULL,
+          token_id TEXT,
+          condition_id TEXT,
           exported INTEGER NOT NULL DEFAULT 0,
           PRIMARY KEY(trade_id, horizon_seconds, calc_version)
         );
@@ -160,6 +170,30 @@ class DurableJournal(Journal):
             WHERE batch_id IN (SELECT batch_id FROM export_batch_items WHERE source_table = 'trade_markouts' AND item_id = (NEW.trade_id || ':' || NEW.horizon_seconds || ':' || NEW.calc_version));
         END;
         """)
+
+        # Automated schema column migration for existing sqlite journals
+        cols_wt = [r[1] for r in self.db.execute("PRAGMA table_info(wallet_trades)").fetchall()]
+        for col_name, col_def in [
+            ("chain_id", "INTEGER DEFAULT 137"),
+            ("exchange_address", "TEXT DEFAULT '0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e'"),
+            ("condition_id", "TEXT"),
+            ("token_id", "TEXT DEFAULT '0'"),
+            ("outcome_label", "TEXT"),
+            ("timestamp_source", "TEXT DEFAULT 'block_header'"),
+            ("match_type", "TEXT DEFAULT 'complementary'"),
+        ]:
+            if col_name not in cols_wt:
+                self.db.execute(f"ALTER TABLE wallet_trades ADD COLUMN {col_name} {col_def}")
+
+        cols_tm = [r[1] for r in self.db.execute("PRAGMA table_info(trade_markouts)").fetchall()]
+        for col_name, col_def in [
+            ("trade_timestamp", "TEXT"),
+            ("token_id", "TEXT"),
+            ("condition_id", "TEXT"),
+        ]:
+            if col_name not in cols_tm:
+                self.db.execute(f"ALTER TABLE trade_markouts ADD COLUMN {col_name} {col_def}")
+
         self.db.commit()
 
     def event(self, event):
@@ -211,14 +245,16 @@ class DurableJournal(Journal):
                         INSERT OR IGNORE INTO wallet_trades
                         (trade_id, event_id, wallet_address, venue, market_id,
                          attribution_type, side, price, quantity, notional,
-                         exchange_timestamp, received_timestamp, transaction_hash,
-                         block_number, log_index, source, exported)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                         exchange_timestamp, received_timestamp, chain_id, exchange_address,
+                         transaction_hash, block_number, log_index, condition_id,
+                         token_id, outcome_label, timestamp_source, match_type, source, exported)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                     """, (
                         wt.trade_id, wt.event_id, wt.wallet_address, wt.venue, wt.market_id,
                         wt.attribution_type, wt.side, wt.price, wt.quantity, wt.notional,
-                        wt.exchange_timestamp, wt.received_timestamp, wt.transaction_hash,
-                        wt.block_number, wt.log_index, wt.source
+                        wt.exchange_timestamp, wt.received_timestamp, wt.chain_id, wt.exchange_address,
+                        wt.transaction_hash, wt.block_number, wt.log_index, wt.condition_id,
+                        wt.token_id, wt.outcome_label, wt.timestamp_source, wt.match_type, wt.source
                     ))
             if event.event_type == "fill" and isinstance(event.raw_payload, dict) and "decoded" in event.raw_payload:
                 decoded = event.raw_payload["decoded"]
@@ -240,14 +276,16 @@ class DurableJournal(Journal):
                 INSERT OR IGNORE INTO wallet_trades
                 (trade_id, event_id, wallet_address, venue, market_id,
                  attribution_type, side, price, quantity, notional,
-                 exchange_timestamp, received_timestamp, transaction_hash,
-                 block_number, log_index, source, exported)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                 exchange_timestamp, received_timestamp, chain_id, exchange_address,
+                 transaction_hash, block_number, log_index, condition_id,
+                 token_id, outcome_label, timestamp_source, match_type, source, exported)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """, (
                 wt.trade_id, wt.event_id, wt.wallet_address, wt.venue, wt.market_id,
                 wt.attribution_type, wt.side, wt.price, wt.quantity, wt.notional,
-                wt.exchange_timestamp, wt.received_timestamp, wt.transaction_hash,
-                wt.block_number, wt.log_index, wt.source
+                wt.exchange_timestamp, wt.received_timestamp, wt.chain_id, wt.exchange_address,
+                wt.transaction_hash, wt.block_number, wt.log_index, wt.condition_id,
+                wt.token_id, wt.outcome_label, wt.timestamp_source, wt.match_type, wt.source
             ))
             self.db.commit()
         return cur
@@ -405,9 +443,16 @@ class DurableJournal(Journal):
                 "notional": str(row["notional"]),
                 "exchange_timestamp": row["exchange_timestamp"],
                 "received_timestamp": row["received_timestamp"],
+                "chain_id": row.get("chain_id") or 137,
+                "exchange_address": (row.get("exchange_address") or "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e").lower(),
                 "transaction_hash": row["transaction_hash"],
                 "block_number": row["block_number"],
                 "log_index": row["log_index"],
+                "condition_id": row.get("condition_id"),
+                "token_id": str(row.get("token_id") or "0"),
+                "outcome_label": row.get("outcome_label"),
+                "timestamp_source": row.get("timestamp_source") or "block_header",
+                "match_type": row.get("match_type") or "complementary",
                 "source": row["source"]
             } for row in items]
         elif target_table == "trade_markouts":
@@ -425,7 +470,10 @@ class DurableJournal(Journal):
                 "markout": f"{float(row['markout']):.6f}" if row["markout"] is not None else None,
                 "markout_bps": f"{float(row['markout_bps']):.4f}" if row["markout_bps"] is not None else None,
                 "observation_time": row["observation_time"],
-                "calculated_at": row["calculated_at"]
+                "trade_timestamp": row.get("trade_timestamp") or row["calculated_at"],
+                "calculated_at": row["calculated_at"],
+                "token_id": row.get("token_id"),
+                "condition_id": row.get("condition_id")
             } for row in items]
         raise ValueError(f"Unknown target table: {target_table}")
 
@@ -671,12 +719,14 @@ class DurableJournal(Journal):
         self.db.commit()
         return cur.rowcount > 0
 
-    def future_mid_v2(self, venue, market_id, target, tolerance_seconds=5.0):
+    def future_mid_v2(self, venue, market_id, target, tolerance_seconds=5.0, current_time=None, grace_seconds=5.0):
         """
         Looks up future midpoint within [target - 0.5, target + tolerance_seconds].
         Validates against crossed/locked books and stale observations.
+        Differentiates 'pending' from 'unavailable' during the active evaluation grace window.
         Returns (status, mid_price, obs_time).
         """
+        now_ts = current_time if current_time is not None else time.time()
         rows = self.db.execute("""
             SELECT recorded_at, payload
             FROM book_observations
@@ -687,6 +737,8 @@ class DurableJournal(Journal):
         """, (venue, market_id, target - 0.5, target + tolerance_seconds, target)).fetchall()
 
         if not rows:
+            if now_ts < target + tolerance_seconds + grace_seconds:
+                return "pending", None, None
             return "unavailable", None, None
 
         for r in rows:
@@ -696,6 +748,10 @@ class DurableJournal(Journal):
                 view = json.loads(r["payload"])
             except Exception:
                 continue
+
+            # Check quote staleness
+            if view.get("is_stale") or (abs(rec_at - target) > 10.0):
+                return "stale", None, obs_iso
 
             bid = view.get("best_bid")
             ask = view.get("best_ask")
@@ -722,7 +778,10 @@ class DurableJournal(Journal):
                 "market_id": trade_row["market_id"],
                 "side": trade_row["side"],
                 "price": float(trade_row["price"]),
-                "executed_at": float(trade_row["executed_at"])
+                "executed_at": float(trade_row["executed_at"]),
+                "trade_timestamp": datetime.fromtimestamp(float(trade_row["executed_at"]), timezone.utc).isoformat(timespec="milliseconds"),
+                "token_id": None,
+                "condition_id": None
             }
         else:
             exec_ts = None
@@ -733,6 +792,9 @@ class DurableJournal(Journal):
                     pass
             if exec_ts is None:
                 exec_ts = datetime.fromisoformat(trade_row["received_timestamp"].replace("Z", "+00:00")).timestamp()
+            trade_ts_str = trade_row["exchange_timestamp"] or trade_row["received_timestamp"]
+            tok_id = trade_row["token_id"] if "token_id" in trade_row.keys() else None
+            cond_id = trade_row["condition_id"] if "condition_id" in trade_row.keys() else None
             trade = {
                 "trade_id": trade_row["trade_id"],
                 "wallet_address": trade_row["wallet_address"],
@@ -740,7 +802,10 @@ class DurableJournal(Journal):
                 "market_id": trade_row["market_id"],
                 "side": trade_row["side"],
                 "price": float(trade_row["price"]),
-                "executed_at": exec_ts
+                "executed_at": exec_ts,
+                "trade_timestamp": trade_ts_str,
+                "token_id": tok_id,
+                "condition_id": cond_id
             }
 
         calc_time = now_utc()
@@ -765,12 +830,13 @@ class DurableJournal(Journal):
                 INSERT OR REPLACE INTO trade_markouts
                 (trade_id, wallet_address, venue, market_id, side, horizon_seconds,
                  calc_version, status, exec_price, future_mid, markout, markout_bps,
-                 observation_time, calculated_at, exported)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                 observation_time, trade_timestamp, calculated_at, token_id, condition_id, exported)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """, (
                 trade["trade_id"], trade["wallet_address"], trade["venue"], trade["market_id"],
                 trade["side"], h, calc_version, status, trade["price"], mid,
-                markout_val, markout_bps_val, obs_time, calc_time
+                markout_val, markout_bps_val, obs_time, trade["trade_timestamp"] or calc_time,
+                calc_time, trade.get("token_id"), trade.get("condition_id")
             ))
             results.append({
                 "trade_id": trade["trade_id"],
@@ -786,7 +852,10 @@ class DurableJournal(Journal):
                 "markout": markout_val,
                 "markout_bps": markout_bps_val,
                 "observation_time": obs_time,
+                "trade_timestamp": trade["trade_timestamp"] or calc_time,
                 "calculated_at": calc_time,
+                "token_id": trade.get("token_id"),
+                "condition_id": trade.get("condition_id"),
                 "available": status == "available"
             })
         self.db.commit()
@@ -997,13 +1066,20 @@ class DurableJournal(Journal):
             m_data = self.get_wallet_markouts(addr, horizon=horizon, calc_version=calc_version)
             summary = m_data["summary"][0] if m_data["summary"] else {}
             
+            avail_count = summary.get("available_count", 0)
             trade_count = w["trade_count"]
-            qualified = trade_count >= min_trades
+            status_counts = summary.get("status_counts", {})
+            # Minimum sample-size threshold applied strictly to available observations for this specific horizon
+            qualified = avail_count >= min_trades
             
             rankings.append({
                 "wallet": addr,
+                "total_trades": trade_count,
                 "trade_count": trade_count,
-                "available_count": summary.get("available_count", 0),
+                "available_count": avail_count,
+                "unavailable_count": status_counts.get("unavailable", 0),
+                "stale_count": status_counts.get("stale", 0),
+                "crossed_count": status_counts.get("crossed", 0),
                 "horizon_seconds": horizon,
                 "avg_markout": summary.get("average_markout"),
                 "avg_markout_bps": summary.get("average_markout_bps"),

@@ -281,13 +281,20 @@ sequenceDiagram
 - **How it works**: Reads operator-reviewed, unexpired pairs from the SQLite contract registry, then queries valid best bids and asks to compute `buy_polymarket_sell_kalshi` ($P^{\text{Kalshi}}_{\text{bid}} - P^{\text{Poly}}_{\text{ask}}$) and vice versa. Market titles alone never authorize a comparison.
 - **Implementation**: `MarketState.spreads()` in [backend/state.py](file:///d:/PROJECTS/Polypulse/backend/state.py).
 
-### 6. Wallet Markout Scoring
-- **What it does**: Evaluates adverse selection on executed trades by comparing execution price to subsequent market midpoints.
-- **Why it exists**: Critical for liquidity providers to distinguish informed flow from noise flow.
-- **How it works**: Calculates markouts across 5s, 30s, and 60s horizons:
-  $$\text{Markout} = \text{Direction} \times (P_{\text{mid}}(t + \Delta t) - P_{\text{exec}})$$
-  Missing future ticks are strictly preserved as `null` to avoid lookahead bias.
-- **Implementation**: `markouts()` in [backend/main.py](file:///d:/PROJECTS/Polypulse/backend/main.py) and [docs/markout-engine.md](file:///d:/PROJECTS/Polypulse/docs/markout-engine.md).
+### 6. Wallet Markout Scoring & Microstructure Audit
+- **What it does**: Evaluates adverse selection on executed trades by comparing execution price to subsequent market midpoints across 5s, 30s, and 60s observation horizons.
+- **Why it exists**: Critical for liquidity providers to distinguish informed flow (alpha) from uninformed noise, quantify maker adverse selection, and monitor trader performance.
+- **Phase 5 Correctness Audit Highlights**:
+  - **Zero Fabrication**: Public CLOB and Kalshi market data feeds never fabricate synthetic counterparties or wallet IDs.
+  - **Verified On-Chain Attribution**: Decodes individual maker fills from Polygon CTF Exchange V2 and Neg Risk Exchange V2 contracts.
+  - **Summary Event Exclusion**: Taker-order summary logs (`taker == exchange_address`) and exchange contract addresses (`0x4bfb...`, `0xc5d5...`) are classified and filtered out to prevent phantom wallet attribution.
+  - **Match Types**: Supports Complementary, MINT (both maker and taker are buyers), MERGE (both maker and taker are sellers), and strictly rejects unresolved matches.
+  - **Address Normalization**: Validates exact 20-byte addresses, checks leading zero-padding in 32-byte topics, and provides EIP-55 checksumming (`to_checksum_address`) for user display.
+  - **Precision Preservation**: Preserves 256-bit `token_id` integers as lossless decimal strings.
+  - **Timing & Invariants**: Enforces an observation tolerance window ($[T_{\text{target}} - 0.5\text{s}, T_{\text{target}} + 5.0\text{s}]$), flags stale quotes ($> 10\text{s}$ latency), rejects crossed quotes ($P_{\text{ask}} \le P_{\text{bid}}$), and delays finalized unavailable classification until $T_{\text{target}} + 10\text{s}$.
+  - **ClickHouse Partition Stability**: `trade_markouts` is partitioned by `toYYYYMM(trade_timestamp)` so cross-month recomputations deduplicate deterministically within the trade's immutable month partition.
+  - **Sample Size Qualification**: Enforces sample size filters ($N \ge 5$) independently per horizon based on available observations (`available_count >= min_trades`).
+- **Implementation & Specifications**: [backend/wallet.py](backend/wallet.py), [backend/markout.py](backend/markout.py), [docs/phase5.md](docs/phase5.md), and [docs/verification/phase5-live-audit.json](docs/verification/phase5-live-audit.json).
 
 ### 7. ClickHouse Time-Series Analytics
 - **What it does**: Provides high-throughput columnar storage for historical market events and snapshots.
@@ -581,19 +588,19 @@ Interactive Swagger documentation is available at `http://localhost:8000/docs`.
 
 ## 11. Testing & Verification
 
-PolyPulse includes automated test suites across all layers (72 tests passing):
+PolyPulse includes automated test suites across all layers (77 tests passing):
 
 ```powershell
 # 1. C++ Engine Unit Tests
 python scripts/build_engine.py --test
 
-# 2. Python Test Suite (All 72 tests across live feeds, C++ FFI, ClickHouse & Markouts)
+# 2. Python Test Suite (All 77 tests across live feeds, C++ FFI, ClickHouse & Markouts)
 python -m unittest discover -s tests -v
 
-# 3. Wallet Intelligence & Markout Analytics Tests (23 tests)
+# 3. Wallet Intelligence & Markout Analytics Tests (28 tests)
 python -m unittest tests/test_wallet_markout.py -v
 
-# 4. ClickHouse Analytics Integration Tests (14 tests)
+# 4. ClickHouse Analytics Integration Tests (16 tests)
 python -m unittest tests/test_clickhouse_analytics.py -v
 
 # 5. Frontend TypeScript Typecheck & Production Build

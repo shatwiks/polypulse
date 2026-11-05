@@ -282,7 +282,8 @@ class ClickHouseAnalyticsTests(unittest.TestCase):
     def test_14_step_duplicate_delivery_audit(self):
         """Comprehensive 14-step duplicate delivery audit through ClickHouse tables and materialized views."""
         market_id = f"test-audit14-{uuid.uuid4().hex[:8]}"
-        now = datetime.now(timezone.utc).replace(microsecond=0)
+        # Align to second 10 so timestamps +1s..+4s remain reliably within the same 1m candle
+        now = datetime.now(timezone.utc).replace(second=10, microsecond=0)
 
         db_dir = tempfile.mkdtemp()
         try:

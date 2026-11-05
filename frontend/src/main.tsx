@@ -12,7 +12,7 @@ type Trade = {trade_id:string;wallet:string|null;venue:string;market_id:string;s
 type WalletRow = {wallet:string;trade_count:number;active_markets?:number;maker_count?:number;taker_count?:number}
 type Markout = {wallet:string;summary:{horizon_seconds:number;trade_count:number;available_count:number;average_markout:number|null;average_markout_bps?:number|null;positive_percentage:number|null;status_counts?:Record<string,number>}[];entries:{trade_id:string;horizon_seconds:number;future_mid:number|null;markout:number|null;markout_bps?:number|null;available:boolean;status?:string;side?:string;exec_price?:number}[]}
 type WalletProfile = {wallet_address:string;trade_count:number;market_count:number;venue_count:number;total_volume:number;total_notional:number;first_seen:string|null;last_seen:string|null;maker_count:number;taker_count:number}
-type WalletRanking = {wallet:string;trade_count:number;available_count:number;horizon_seconds:number;avg_markout:number|null;avg_markout_bps:number|null;positive_percentage:number|null;qualified:boolean;sample_status:string;maker_count?:number;taker_count?:number}
+type WalletRanking = {wallet:string;trade_count:number;total_trades?:number;available_count:number;unavailable_count?:number;stale_count?:number;crossed_count?:number;horizon_seconds:number;avg_markout:number|null;avg_markout_bps:number|null;positive_percentage:number|null;qualified:boolean;sample_status:string;maker_count?:number;taker_count?:number}
 type MarkoutDistribution = {horizon_seconds:number;total_count:number;available_count:number;quantiles:{p10:number|null;p25:number|null;median:number|null;p75:number|null;p90:number|null};min_bps:number|null;max_bps:number|null;avg_bps:number|null;win_rate:number|null}
 type WalletTradeEntry = {trade_id:string;event_id?:string;wallet_address:string;venue:string;market_id:string;attribution_type:string;side:string;price:string;quantity:string;notional:string;exchange_timestamp?:string;received_timestamp:string;source:string}
 type MarketSummary = {market_id:string;venue:string|null;window:string;trade_count:number;total_volume:number;buy_volume:number;sell_volume:number;dollar_volume:number;vwap:number|null;high_price:number|null;low_price:number|null;close_price:number|null;best_bid:number|null;best_ask:number|null;spread:number|null;spread_bps:number|null;bid_depth:number;ask_depth:number;snapshot_count:number}
@@ -184,23 +184,25 @@ function App(){
                   <tr>
                     <th>#</th>
                     <th>WALLET</th>
-                    <th className="num">TRADES</th>
-                    <th className="num">AVG MARKOUT</th>
-                    <th className="num">WIN RATE</th>
+                    <th className="num">TOTAL</th>
+                    <th className="num">AVAIL</th>
+                    <th className="num">AVG DRIFT</th>
+                    <th className="num">WIN %</th>
                     <th>STATUS</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(walletRankings.length ? walletRankings : wallets.map(w=>({
                     wallet: w.wallet,
+                    total_trades: w.trade_count,
                     trade_count: w.trade_count,
                     available_count: 0,
                     horizon_seconds: rankingHorizon,
                     avg_markout: null,
                     avg_markout_bps: null,
                     positive_percentage: null,
-                    qualified: w.trade_count >= 5,
-                    sample_status: w.trade_count >= 5 ? 'qualified' : 'insufficient_sample'
+                    qualified: false,
+                    sample_status: 'insufficient_sample'
                   })))
                   .filter(r => !walletSearch || r.wallet.toLowerCase().includes(walletSearch.toLowerCase()))
                   .map((r, idx) => {
@@ -208,14 +210,15 @@ function App(){
                     const isPos = (r.avg_markout_bps ?? 0) > 0
                     const isNeg = (r.avg_markout_bps ?? 0) < 0
                     return (
-                      <tr key={r.wallet} className={isChosen ? 'chosen' : ''} onClick={()=>setWallet(r.wallet)}>
+                    <tr key={r.wallet} className={isChosen ? 'chosen' : ''} onClick={()=>setWallet(r.wallet)}>
                         <td className="mono">{String(idx + 1).padStart(2, '0')}</td>
                         <td className="mono" title={r.wallet}><strong>{short(r.wallet)}</strong></td>
-                        <td className="num">{r.trade_count}</td>
+                        <td className="num">{r.total_trades ?? r.trade_count}</td>
+                        <td className="num">{r.available_count ?? 0}</td>
                         <td className={`num ${isPos ? 'green' : isNeg ? 'red' : ''}`}>{signedBps(r.avg_markout_bps)}</td>
                         <td className="num">{r.positive_percentage != null ? `${r.positive_percentage.toFixed(0)}%` : '—'}</td>
                         <td>
-                          <span className={`status-pill ${r.qualified ? 'good' : 'muted'}`}>
+                          <span className={`status-pill ${r.qualified ? 'good' : 'muted'}`} title={r.qualified ? `Qualified: ${r.available_count ?? 0} available markouts` : `Insufficient sample: ${r.available_count ?? 0} < 5 available markouts`}>
                             {r.qualified ? 'QUALIFIED' : 'N < 5'}
                           </span>
                         </td>
