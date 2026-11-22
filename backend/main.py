@@ -1,5 +1,6 @@
 """PolyPulse API. Run with python -m uvicorn backend.main:app --reload."""
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -7,7 +8,7 @@ import time
 from urllib.parse import quote
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Security, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Security, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.security import APIKeyHeader
@@ -111,8 +112,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PolyPulse API", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-                   allow_methods=["GET", "POST"], allow_headers=["*"])
+
+_cors_origins_env = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+_cors_origins = [o.strip().rstrip("/") for o in _cors_origins_env.split(",") if o.strip() and o.strip() != "*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Operator-Key"],
+)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 
 
 def state():
@@ -236,15 +254,18 @@ def verify_operator_access(
     x_operator_key: str | None = Security(operator_key_header),
     authorization: str | None = Header(default=None)
 ):
-    """Enforce operator authentication on contract review routes when OPERATOR_KEY is configured."""
+    """Enforce constant-time operator authentication on contract review routes; fail-closed in live mode."""
     required_key = os.getenv("OPERATOR_KEY")
     if not required_key:
+        mode = getattr(app.state, "config", {}).get("mode", os.getenv("POLYPULSE_MODE", "demo"))
+        if mode == "live":
+            raise HTTPException(status_code=403, detail="OPERATOR_KEY must be configured in live mode")
         return True
-    if x_operator_key and x_operator_key == required_key:
+    if x_operator_key and hmac.compare_digest(x_operator_key, required_key):
         return True
     if authorization:
         parts = authorization.split()
-        if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1] == required_key:
+        if len(parts) == 2 and parts[0].lower() == "bearer" and hmac.compare_digest(parts[1], required_key):
             return True
     raise HTTPException(status_code=403, detail="Invalid or missing operator authorization")
 
